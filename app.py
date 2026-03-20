@@ -5,8 +5,12 @@ import sqlite3
 import random
 import datetime
 import json
+import traceback
 
 TOKEN = os.environ.get("TOKEN")
+if not TOKEN:
+    raise RuntimeError("TOKEN environment variable is not set")
+
 BASE_URL = f"https://api.telegram.org/bot{TOKEN}"
 
 app = Flask(__name__)
@@ -249,6 +253,17 @@ def get_inventory(tid, limit=20):
     return rows
 
 
+def get_inventory_item(tid, inventory_id):
+    conn = db()
+    row = conn.execute("""
+    SELECT *
+    FROM inventory
+    WHERE telegram_id = ? AND id = ?
+    """, (str(tid), inventory_id)).fetchone()
+    conn.close()
+    return row
+
+
 def sell_item(tid, item_id):
     conn = db()
     row = conn.execute("""
@@ -292,7 +307,9 @@ def format_inventory(rows):
 
 
 def roll_case(case_name):
-    case = CASES[case_name]
+    case = CASES.get(case_name)
+    if not case:
+        return None
     items = case["items"]
     weights = [item["chance"] for item in items]
     return random.choices(items, weights=weights, k=1)[0]
@@ -300,7 +317,12 @@ def roll_case(case_name):
 
 def open_case(tid, case_name):
     user = get_user(tid)
-    case_price = CASES[case_name]["price"]
+    case = CASES.get(case_name)
+
+    if not case:
+        return None, "❌ Кейс не найден."
+
+    case_price = case["price"]
 
     if user["balance"] < case_price:
         return None, "❌ Недостаточно монет для открытия кейса."
@@ -308,6 +330,10 @@ def open_case(tid, case_name):
     update_balance(tid, -case_price)
 
     item = roll_case(case_name)
+    if not item:
+        update_balance(tid, case_price)
+        return None, "❌ Ошибка открытия кейса."
+
     add_item_to_inventory(tid, item, case_name)
     add_case_history(tid, item, case_name)
 
@@ -336,11 +362,19 @@ def send(chat_id, text, keyboard=None):
     if keyboard:
         payload["reply_markup"] = keyboard
 
-    requests.post(
-        f"{BASE_URL}/sendMessage",
-        json=payload,
-        timeout=20
-    )
+    try:
+        r = requests.post(
+            f"{BASE_URL}/sendMessage",
+            json=payload,
+            timeout=20
+        )
+        print("SEND STATUS:", r.status_code, flush=True)
+        print("SEND BODY:", r.text, flush=True)
+        return r
+    except Exception as e:
+        print("SEND ERROR:", str(e), flush=True)
+        print(traceback.format_exc(), flush=True)
+        return None
 
 
 def main_menu():
@@ -353,7 +387,8 @@ def main_menu():
         ],
         "resize_keyboard": True
     }
-    
+
+
 def upgrade_percent_menu():
     return {
         "keyboard": [
@@ -363,6 +398,7 @@ def upgrade_percent_menu():
         "resize_keyboard": True
     }
 
+
 def game_menu():
     return {
         "keyboard": [
@@ -371,6 +407,7 @@ def game_menu():
         ],
         "resize_keyboard": True
     }
+
 
 SKINS_DATA = [
     {"name": "Glock-18 | Bunsen Burner", "rarity": "Consumer", "price": 80, "case": "Fracture Case"},
@@ -389,6 +426,7 @@ SKINS_DATA = [
     {"name": "M4A1-S | Printstream", "rarity": "Covert", "price": 6500, "case": "Danger Case"},
     {"name": "★ Karambit | Doppler", "rarity": "Knife", "price": 42000, "case": "Danger Case"},
 ]
+
 
 def get_upgrade_target(from_price, percent):
     if percent <= 5:
@@ -416,7 +454,8 @@ def get_upgrade_target(from_price, percent):
         return None
 
     return random.choice(candidates)
-    
+
+
 def earn_menu():
     return {
         "keyboard": [
@@ -425,6 +464,8 @@ def earn_menu():
         ],
         "resize_keyboard": True
     }
+
+
 def perform_simple_upgrade(tid, inventory_id, percent):
     item = get_inventory_item(tid, inventory_id)
     if not item:
@@ -474,6 +515,7 @@ def perform_simple_upgrade(tid, inventory_id, percent):
         f"Шанс: {percent}%"
     )
 
+
 def bet_menu():
     return {
         "keyboard": [
@@ -484,15 +526,7 @@ def bet_menu():
         "resize_keyboard": True
     }
 
-def get_inventory_item(tid, inventory_id):
-    conn = db()
-    row = conn.execute("""
-    SELECT *
-    FROM inventory
-    WHERE telegram_id = ? AND id = ?
-    """, (str(tid), inventory_id)).fetchone()
-    conn.close()
-    return row
+
 def roulette_menu():
     return {
         "keyboard": [
@@ -503,15 +537,7 @@ def roulette_menu():
         ],
         "resize_keyboard": True
     }
-def get_inventory_item(tid, inventory_id):
-    conn = db()
-    row = conn.execute("""
-    SELECT *
-    FROM inventory
-    WHERE telegram_id = ? AND id = ?
-    """, (str(tid), inventory_id)).fetchone()
-    conn.close()
-    return row
+
 
 def case_menu():
     return {
@@ -557,6 +583,9 @@ def safe_int(text):
 # ---------------- SLOT ----------------
 def slot_spin(tid, bet):
     user = get_user(tid)
+
+    if bet <= 0:
+        return "❌ Ставка должна быть больше 0."
 
     if user["balance"] < bet:
         return "❌ Недостаточно монет для такой ставки."
@@ -622,6 +651,9 @@ def slot_spin(tid, bet):
 # ---------------- ROULETTE ----------------
 def roulette_resolve(tid, bet, bet_type, bet_value):
     user = get_user(tid)
+
+    if bet is None or bet <= 0:
+        return "❌ Некорректная ставка."
 
     if user["balance"] < bet:
         return "❌ Недостаточно монет для такой ставки."
@@ -707,244 +739,259 @@ def home():
 
 @app.route("/", methods=["POST"])
 def bot():
-    data = request.get_json(silent=True) or {}
+    try:
+        data = request.get_json(silent=True) or {}
+        print("INCOMING UPDATE:", json.dumps(data, ensure_ascii=False), flush=True)
 
-    if "message" not in data:
-        return "ok", 200
+        if "message" not in data:
+            return "ok", 200
 
-    msg = data["message"]
-    chat = msg["chat"]["id"]
-    text = msg.get("text", "").strip()
-    tg_user = msg["from"]
+        msg = data["message"]
+        chat = msg["chat"]["id"]
+        text = msg.get("text", "").strip()
+        tg_user = msg["from"]
 
-    user_id = tg_user["id"]
+        user_id = tg_user["id"]
 
-    create_user(user_id, tg_user.get("first_name", "Игрок"))
-    user = get_user(user_id)
-    session = get_session(user_id)
-    payload = get_session_payload(session)
+        create_user(user_id, tg_user.get("first_name", "Игрок"))
+        user = get_user(user_id)
+        session = get_session(user_id)
+        payload = get_session_payload(session)
 
-    lower_text = text.lower()
+        lower_text = text.lower()
 
-    # START
-    if text == "/start":
-        clear_session(user_id)
-        send(
-            chat,
-            f"👋 Привет, {user['first_name']}!\n"
-            f"Твой баланс: {user['balance']} монет.",
-            main_menu()
-        )
-        return "ok", 200
+        # START
+        if text == "/start":
+            clear_session(user_id)
+            send(
+                chat,
+                f"👋 Привет, {user['first_name']}!\n"
+                f"Твой баланс: {user['balance']} монет.",
+                main_menu()
+            )
+            return "ok", 200
 
-    # SELL ITEM
-    if lower_text.startswith("sell "):
-        parts = lower_text.split()
-        if len(parts) == 2:
-            item_id = safe_int(parts[1])
-            if item_id is None:
-                send(chat, "❌ Формат: sell ID\nПример: sell 12", main_menu())
+        # SELL ITEM
+        if lower_text.startswith("sell "):
+            parts = lower_text.split()
+            if len(parts) == 2:
+                item_id = safe_int(parts[1])
+                if item_id is None:
+                    send(chat, "❌ Формат: sell ID\nПример: sell 12", main_menu())
+                    return "ok", 200
+
+                ok, result = sell_item(user_id, item_id)
+                updated = get_user(user_id)
+                send(chat, f"{result}\n\n💰 Баланс: {updated['balance']}", main_menu())
                 return "ok", 200
 
-            ok, result = sell_item(user_id, item_id)
-            updated = get_user(user_id)
-            send(chat, f"{result}\n\n💰 Баланс: {updated['balance']}", main_menu())
+        # BACK
+        if text == "Назад":
+            clear_session(user_id)
+            send(chat, "Главное меню:", main_menu())
             return "ok", 200
 
-    # BACK
-    if text == "Назад":
-        clear_session(user_id)
-        send(chat, "Главное меню:", main_menu())
-        return "ok", 200
-
-    # BALANCE
-    if text == "Баланс":
-        user = get_user(user_id)
-        send(chat, format_balance_text(user), main_menu())
-        return "ok", 200
-
-    # STATS
-    if text == "Статистика":
-        user = get_user(user_id)
-        send(
-            chat,
-            f"📊 Статистика\n\n"
-            f"Имя: {user['first_name']}\n"
-            f"Баланс: {user['balance']}\n"
-            f"Побед: {user['wins']}\n"
-            f"Поражений: {user['losses']}",
-            main_menu()
-        )
-        return "ok", 200
-
-    # GAME MENU
-    if text == "Играть":
-        clear_session(user_id)
-        send(chat, "🎮 Выбери игру:", game_menu())
-        return "ok", 200
-
-    # SLOT FLOW
-    if text == "Слот":
-        clear_session(user_id)
-        set_session(user_id, "slot_wait_bet")
-        send(chat, "🎰 Выбери ставку или нажми «Своя ставка»:", bet_menu())
-        return "ok", 200
-
-    if session and session["state"] == "slot_wait_bet":
-        if text == "Своя ставка":
-            set_session(user_id, "slot_wait_custom_bet")
-            send(chat, "💬 Введи свою ставку числом:", bet_menu())
+        # BALANCE
+        if text == "Баланс":
+            user = get_user(user_id)
+            send(chat, format_balance_text(user), main_menu())
             return "ok", 200
 
-        if text in ["10", "50", "100"]:
-            bet = int(text)
+        # STATS
+        if text == "Статистика":
+            user = get_user(user_id)
+            send(
+                chat,
+                f"📊 Статистика\n\n"
+                f"Имя: {user['first_name']}\n"
+                f"Баланс: {user['balance']}\n"
+                f"Побед: {user['wins']}\n"
+                f"Поражений: {user['losses']}",
+                main_menu()
+            )
+            return "ok", 200
+
+        # GAME MENU
+        if text == "Играть":
+            clear_session(user_id)
+            send(chat, "🎮 Выбери игру:", game_menu())
+            return "ok", 200
+
+        # SLOT FLOW
+        if text == "Слот":
+            clear_session(user_id)
+            set_session(user_id, "slot_wait_bet")
+            send(chat, "🎰 Выбери ставку или нажми «Своя ставка»:", bet_menu())
+            return "ok", 200
+
+        if session and session["state"] == "slot_wait_bet":
+            if text == "Своя ставка":
+                set_session(user_id, "slot_wait_custom_bet")
+                send(chat, "💬 Введи свою ставку числом:", bet_menu())
+                return "ok", 200
+
+            if text in ["10", "50", "100"]:
+                bet = int(text)
+                result_text = slot_spin(user_id, bet)
+                set_session(user_id, "slot_wait_bet")
+                send(chat, result_text, bet_menu())
+                return "ok", 200
+
+        if session and session["state"] == "slot_wait_custom_bet":
+            bet = safe_int(text)
+            if bet is None or bet <= 0:
+                send(chat, "❌ Введи ставку числом больше 0.", bet_menu())
+                return "ok", 200
+
             result_text = slot_spin(user_id, bet)
             set_session(user_id, "slot_wait_bet")
             send(chat, result_text, bet_menu())
             return "ok", 200
 
-    if session and session["state"] == "slot_wait_custom_bet":
-        bet = safe_int(text)
-        if bet is None or bet <= 0:
-            send(chat, "❌ Введи ставку числом больше 0.", bet_menu())
+        # ROULETTE FLOW
+        if text == "Рулетка":
+            clear_session(user_id)
+            set_session(user_id, "roulette_wait_bet")
+            send(chat, "🎡 Введи ставку для рулетки:", roulette_menu())
+            send(chat, "💬 Напиши сумму ставки числом.")
             return "ok", 200
 
-        result_text = slot_spin(user_id, bet)
-        set_session(user_id, "slot_wait_bet")
-        send(chat, result_text, bet_menu())
-        return "ok", 200
+        if session and session["state"] == "roulette_wait_bet":
+            bet = safe_int(text)
+            if bet is None or bet <= 0:
+                send(chat, "❌ Введи ставку числом больше 0.")
+                return "ok", 200
 
-    # ROULETTE FLOW
-    if text == "Рулетка":
-        clear_session(user_id)
-        set_session(user_id, "roulette_wait_bet")
-        send(chat, "🎡 Введи ставку для рулетки:", roulette_menu())
-        send(chat, "💬 Напиши сумму ставки числом.")
-        return "ok", 200
-
-    if session and session["state"] == "roulette_wait_bet":
-        bet = safe_int(text)
-        if bet is None or bet <= 0:
-            send(chat, "❌ Введи ставку числом больше 0.")
+            set_session(user_id, "roulette_wait_type", {"bet": bet})
+            send(
+                chat,
+                f"🎡 Ставка принята: {bet}\n"
+                f"Теперь выбери тип ставки:",
+                roulette_menu()
+            )
             return "ok", 200
 
-        set_session(user_id, "roulette_wait_type", {"bet": bet})
-        send(
-            chat,
-            f"🎡 Ставка принята: {bet}\n"
-            f"Теперь выбери тип ставки:",
-            roulette_menu()
-        )
-        return "ok", 200
+        if session and session["state"] == "roulette_wait_type":
+            bet = payload.get("bet")
 
-    if session and session["state"] == "roulette_wait_type":
-        bet = payload.get("bet")
+            if text in ["Красное", "Чёрное"]:
+                result = roulette_resolve(user_id, bet, "color", text)
+                set_session(user_id, "roulette_wait_bet")
+                send(chat, result, roulette_menu())
+                send(chat, "💬 Хочешь ещё? Введи новую ставку числом.", roulette_menu())
+                return "ok", 200
 
-        if text in ["Красное", "Чёрное"]:
-            result = roulette_resolve(user_id, bet, "color", text)
+            if text in ["Чёт", "Нечёт"]:
+                result = roulette_resolve(user_id, bet, "parity", text)
+                set_session(user_id, "roulette_wait_bet")
+                send(chat, result, roulette_menu())
+                send(chat, "💬 Хочешь ещё? Введи новую ставку числом.", roulette_menu())
+                return "ok", 200
+
+            if text == "Число":
+                set_session(user_id, "roulette_wait_number", {"bet": bet})
+                send(chat, "🔢 Введи число от 0 до 36:")
+                return "ok", 200
+
+            send(chat, "Выбери вариант ставки: Красное, Чёрное, Чёт, Нечёт или Число.", roulette_menu())
+            return "ok", 200
+
+        if session and session["state"] == "roulette_wait_number":
+            bet = payload.get("bet")
+            number = safe_int(text)
+
+            if number is None or number < 0 or number > 36:
+                send(chat, "❌ Введи число от 0 до 36.")
+                return "ok", 200
+
+            result = roulette_resolve(user_id, bet, "number", number)
             set_session(user_id, "roulette_wait_bet")
             send(chat, result, roulette_menu())
             send(chat, "💬 Хочешь ещё? Введи новую ставку числом.", roulette_menu())
             return "ok", 200
 
-        if text in ["Чёт", "Нечёт"]:
-            result = roulette_resolve(user_id, bet, "parity", text)
-            set_session(user_id, "roulette_wait_bet")
-            send(chat, result, roulette_menu())
-            send(chat, "💬 Хочешь ещё? Введи новую ставку числом.", roulette_menu())
-            return "ok", 200
-
-        if text == "Число":
-            set_session(user_id, "roulette_wait_number", {"bet": bet})
-            send(chat, "🔢 Введи число от 0 до 36:")
-            return "ok", 200
-
-        send(chat, "Выбери вариант ставки: Красное, Чёрное, Чёт, Нечёт или Число.", roulette_menu())
-        return "ok", 200
-
-    if session and session["state"] == "roulette_wait_number":
-        bet = payload.get("bet")
-        number = safe_int(text)
-
-        if number is None or number < 0 or number > 36:
-            send(chat, "❌ Введи число от 0 до 36.")
-            return "ok", 200
-
-        result = roulette_resolve(user_id, bet, "number", number)
-        set_session(user_id, "roulette_wait_bet")
-        send(chat, result, roulette_menu())
-        send(chat, "💬 Хочешь ещё? Введи новую ставку числом.", roulette_menu())
-        return "ok", 200
-
-    # CASES
-    if text == "Кейсы":
-        clear_session(user_id)
-        send(
-            chat,
-            "📦 Выбери кейс:\n"
-            "Fracture Case — 200\n"
-            "Danger Case — 350",
-            case_menu()
-        )
-        return "ok", 200
-
-    if text == "Fracture Case (200)":
-        _, result_text = open_case(user_id, "Fracture Case")
-        send(chat, result_text, case_menu())
-        return "ok", 200
-
-    if text == "Danger Case (350)":
-        _, result_text = open_case(user_id, "Danger Case")
-        send(chat, result_text, case_menu())
-        return "ok", 200
-
-    if text == "Инвентарь":
-        rows = get_inventory(user_id)
-        send(chat, format_inventory(rows), main_menu())
-        return "ok", 200
-
-    # EARN
-    if text == "Заработать":
-        clear_session(user_id)
-        send(chat, "🧠 Выбери способ заработка:", earn_menu())
-        return "ok", 200
-
-    if text == "Пример":
-        question, answer = gen_math()
-        set_session(user_id, "math", {"answer": answer})
-        send(
-            chat,
-            f"🧠 Реши пример:\n\n{question}\n\n"
-            f"Награда за правильный ответ: 100 монет",
-            earn_menu()
-        )
-        return "ok", 200
-
-    if session and session["state"] == "math":
-        correct_answer = str(payload.get("answer", ""))
-
-        if text == correct_answer:
-            update_balance(user_id, 100)
+        # CASES
+        if text == "Кейсы":
             clear_session(user_id)
-            updated_user = get_user(user_id)
             send(
                 chat,
-                f"✅ Верно! +100 монет\n"
-                f"{format_balance_text(updated_user)}",
-                earn_menu()
+                "📦 Выбери кейс:\n"
+                "Fracture Case — 200\n"
+                "Danger Case — 350",
+                case_menu()
             )
             return "ok", 200
-        else:
+
+        if text == "Fracture Case (200)":
+            _, result_text = open_case(user_id, "Fracture Case")
+            send(chat, result_text, case_menu())
+            return "ok", 200
+
+        if text == "Danger Case (350)":
+            _, result_text = open_case(user_id, "Danger Case")
+            send(chat, result_text, case_menu())
+            return "ok", 200
+
+        if text == "Инвентарь":
+            rows = get_inventory(user_id)
+            send(chat, format_inventory(rows), main_menu())
+            return "ok", 200
+
+        # UPGRADE PLACEHOLDER
+        if text == "Апгрейд":
+            send(chat, "🛠 Апгрейд пока не подключён в меню.", main_menu())
+            return "ok", 200
+
+        # EARN
+        if text == "Заработать":
             clear_session(user_id)
+            send(chat, "🧠 Выбери способ заработка:", earn_menu())
+            return "ok", 200
+
+        if text == "Пример":
+            question, answer = gen_math()
+            set_session(user_id, "math", {"answer": answer})
             send(
                 chat,
-                f"❌ Неверно.\nПравильный ответ: {correct_answer}",
+                f"🧠 Реши пример:\n\n{question}\n\n"
+                f"Награда за правильный ответ: 100 монет",
                 earn_menu()
             )
             return "ok", 200
 
-    send(chat, "Выбери действие:", main_menu())
-    return "ok", 200
+        if session and session["state"] == "math":
+            correct_answer = str(payload.get("answer", ""))
+
+            if text == correct_answer:
+                update_balance(user_id, 100)
+                clear_session(user_id)
+                updated_user = get_user(user_id)
+                send(
+                    chat,
+                    f"✅ Верно! +100 монет\n"
+                    f"{format_balance_text(updated_user)}",
+                    earn_menu()
+                )
+                return "ok", 200
+            else:
+                clear_session(user_id)
+                send(
+                    chat,
+                    f"❌ Неверно.\nПравильный ответ: {correct_answer}",
+                    earn_menu()
+                )
+                return "ok", 200
+
+        send(chat, "Выбери действие:", main_menu())
+        return "ok", 200
+
+    except Exception as e:
+        print("BOT ERROR:", str(e), flush=True)
+        print(traceback.format_exc(), flush=True)
+        return "ok", 200
 
 
 init_db()
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=10000, debug=True)
