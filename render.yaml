@@ -1,7 +1,6 @@
 services:
- - type: web
- name: rg-casino-bot
- env: python
- buildcommand: pip install -r requirments.txt
- startcommand: gunicorn app:app
- 
+  - type: web
+    name: tg-casino-bot
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT
