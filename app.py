@@ -7,7 +7,7 @@ import datetime
 import json
 import traceback
 
-TOKEN = os.environ.get("TOKEN")
+TOKEN = os.environ.get("7771814257:AAEHWTAUNT6BvH4ivOPKEZBgqeECRjYspGA")
 if not TOKEN:
     raise RuntimeError("TOKEN environment variable is not set")
 
