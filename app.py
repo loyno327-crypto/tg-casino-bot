@@ -348,11 +348,20 @@ def main_menu():
         "keyboard": [
             ["Баланс", "Играть"],
             ["Кейсы", "Инвентарь"],
-            ["Заработать", "Статистика"]
+            ["Апгрейд", "Заработать"],
+            ["Статистика"]
         ],
         "resize_keyboard": True
     }
-
+    
+def upgrade_percent_menu():
+    return {
+        "keyboard": [
+            ["5%", "10%", "30%"],
+            ["Назад"]
+        ],
+        "resize_keyboard": True
+    }
 
 def game_menu():
     return {
@@ -363,7 +372,51 @@ def game_menu():
         "resize_keyboard": True
     }
 
+SKINS_DATA = [
+    {"name": "Glock-18 | Bunsen Burner", "rarity": "Consumer", "price": 80, "case": "Fracture Case"},
+    {"name": "MP5-SD | Kitbash", "rarity": "Industrial", "price": 120, "case": "Fracture Case"},
+    {"name": "P2000 | Gnarled", "rarity": "Mil-Spec", "price": 220, "case": "Fracture Case"},
+    {"name": "AK-47 | Legion of Anubis", "rarity": "Restricted", "price": 650, "case": "Fracture Case"},
+    {"name": "M4A4 | Tooth Fairy", "rarity": "Classified", "price": 1400, "case": "Fracture Case"},
+    {"name": "Desert Eagle | Printstream", "rarity": "Covert", "price": 4000, "case": "Fracture Case"},
+    {"name": "★ Butterfly Knife | Fade", "rarity": "Knife", "price": 25000, "case": "Fracture Case"},
 
+    {"name": "UMP-45 | Carbon Fiber", "rarity": "Consumer", "price": 120, "case": "Danger Case"},
+    {"name": "P250 | Supernova", "rarity": "Industrial", "price": 180, "case": "Danger Case"},
+    {"name": "AWP | Atheris", "rarity": "Mil-Spec", "price": 450, "case": "Danger Case"},
+    {"name": "AK-47 | Slate", "rarity": "Restricted", "price": 950, "case": "Danger Case"},
+    {"name": "USP-S | Neo-Noir", "rarity": "Classified", "price": 2200, "case": "Danger Case"},
+    {"name": "M4A1-S | Printstream", "rarity": "Covert", "price": 6500, "case": "Danger Case"},
+    {"name": "★ Karambit | Doppler", "rarity": "Knife", "price": 42000, "case": "Danger Case"},
+]
+
+def get_upgrade_target(from_price, percent):
+    if percent <= 5:
+        min_price = int(from_price * 8)
+        max_price = int(from_price * 15)
+    elif percent <= 10:
+        min_price = int(from_price * 4)
+        max_price = int(from_price * 8)
+    elif percent <= 30:
+        min_price = int(from_price * 2)
+        max_price = int(from_price * 4)
+    else:
+        min_price = int(from_price * 1.2)
+        max_price = int(from_price * 2)
+
+    candidates = [
+        skin for skin in SKINS_DATA
+        if skin["price"] > from_price and min_price <= skin["price"] <= max_price
+    ]
+
+    if not candidates:
+        candidates = [skin for skin in SKINS_DATA if skin["price"] > from_price]
+
+    if not candidates:
+        return None
+
+    return random.choice(candidates)
+    
 def earn_menu():
     return {
         "keyboard": [
@@ -372,7 +425,54 @@ def earn_menu():
         ],
         "resize_keyboard": True
     }
+def perform_simple_upgrade(tid, inventory_id, percent):
+    item = get_inventory_item(tid, inventory_id)
+    if not item:
+        return "❌ Предмет не найден."
 
+    from_price = item["price"]
+    target = get_upgrade_target(from_price, percent)
+
+    if not target:
+        return "❌ Не найдено подходящих целей для апгрейда."
+
+    roll = random.uniform(0, 100)
+
+    conn = db()
+
+    if roll <= percent:
+        conn.execute("DELETE FROM inventory WHERE id = ?", (inventory_id,))
+        conn.execute("""
+        INSERT INTO inventory (telegram_id, skin_name, rarity, price, case_name, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """, (
+            str(tid),
+            target["name"],
+            target["rarity"],
+            target["price"],
+            target["case"],
+            datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        ))
+        conn.commit()
+        conn.close()
+
+        return (
+            f"🚀 АПГРЕЙД УСПЕШЕН\n\n"
+            f"Было: {item['skin_name']} ({item['price']})\n"
+            f"Стало: {target['name']} ({target['price']})\n"
+            f"Шанс: {percent}%"
+        )
+
+    conn.execute("DELETE FROM inventory WHERE id = ?", (inventory_id,))
+    conn.commit()
+    conn.close()
+
+    return (
+        f"💥 АПГРЕЙД НЕУДАЧЕН\n\n"
+        f"Сгорело: {item['skin_name']} ({item['price']})\n"
+        f"Цель была: {target['name']} ({target['price']})\n"
+        f"Шанс: {percent}%"
+    )
 
 def bet_menu():
     return {
@@ -384,7 +484,15 @@ def bet_menu():
         "resize_keyboard": True
     }
 
-
+def get_inventory_item(tid, inventory_id):
+    conn = db()
+    row = conn.execute("""
+    SELECT *
+    FROM inventory
+    WHERE telegram_id = ? AND id = ?
+    """, (str(tid), inventory_id)).fetchone()
+    conn.close()
+    return row
 def roulette_menu():
     return {
         "keyboard": [
@@ -395,7 +503,15 @@ def roulette_menu():
         ],
         "resize_keyboard": True
     }
-
+def get_inventory_item(tid, inventory_id):
+    conn = db()
+    row = conn.execute("""
+    SELECT *
+    FROM inventory
+    WHERE telegram_id = ? AND id = ?
+    """, (str(tid), inventory_id)).fetchone()
+    conn.close()
+    return row
 
 def case_menu():
     return {
