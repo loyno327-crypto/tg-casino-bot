@@ -43,8 +43,71 @@ def init_db():
     )
     """)
 
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS inventory (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        telegram_id TEXT,
+        skin_name TEXT,
+        rarity TEXT,
+        price INTEGER,
+        case_name TEXT,
+        created_at TEXT
+    )
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS case_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        telegram_id TEXT,
+        case_name TEXT,
+        skin_name TEXT,
+        rarity TEXT,
+        price INTEGER,
+        created_at TEXT
+    )
+    """)
+
     conn.commit()
     conn.close()
+
+
+# ---------------- CASE DATA ----------------
+CASES = {
+    "Fracture Case": {
+        "price": 200,
+        "items": [
+            {"name": "Glock-18 | Bunsen Burner", "rarity": "Consumer", "price": 80, "chance": 30},
+            {"name": "MP5-SD | Kitbash", "rarity": "Industrial", "price": 120, "chance": 24},
+            {"name": "P2000 | Gnarled", "rarity": "Mil-Spec", "price": 220, "chance": 20},
+            {"name": "AK-47 | Legion of Anubis", "rarity": "Restricted", "price": 650, "chance": 12},
+            {"name": "M4A4 | Tooth Fairy", "rarity": "Classified", "price": 1400, "chance": 8},
+            {"name": "Desert Eagle | Printstream", "rarity": "Covert", "price": 4000, "chance": 5},
+            {"name": "★ Butterfly Knife | Fade", "rarity": "Knife", "price": 25000, "chance": 1},
+        ]
+    },
+    "Danger Case": {
+        "price": 350,
+        "items": [
+            {"name": "UMP-45 | Carbon Fiber", "rarity": "Consumer", "price": 120, "chance": 28},
+            {"name": "P250 | Supernova", "rarity": "Industrial", "price": 180, "chance": 24},
+            {"name": "AWP | Atheris", "rarity": "Mil-Spec", "price": 450, "chance": 20},
+            {"name": "AK-47 | Slate", "rarity": "Restricted", "price": 950, "chance": 14},
+            {"name": "USP-S | Neo-Noir", "rarity": "Classified", "price": 2200, "chance": 8},
+            {"name": "M4A1-S | Printstream", "rarity": "Covert", "price": 6500, "chance": 5},
+            {"name": "★ Karambit | Doppler", "rarity": "Knife", "price": 42000, "chance": 1},
+        ]
+    }
+}
+
+RARITY_EMOJI = {
+    "Consumer": "⚪",
+    "Industrial": "🔵",
+    "Mil-Spec": "🟦",
+    "Restricted": "🟪",
+    "Classified": "🩷",
+    "Covert": "🔴",
+    "Knife": "🟡",
+}
 
 
 # ---------------- USER ----------------
@@ -138,6 +201,131 @@ def clear_session(tid):
     conn.close()
 
 
+# ---------------- INVENTORY / CASES ----------------
+def add_item_to_inventory(tid, item, case_name):
+    conn = db()
+    conn.execute("""
+    INSERT INTO inventory (telegram_id, skin_name, rarity, price, case_name, created_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+    """, (
+        str(tid),
+        item["name"],
+        item["rarity"],
+        item["price"],
+        case_name,
+        datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    ))
+    conn.commit()
+    conn.close()
+
+
+def add_case_history(tid, item, case_name):
+    conn = db()
+    conn.execute("""
+    INSERT INTO case_history (telegram_id, case_name, skin_name, rarity, price, created_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+    """, (
+        str(tid),
+        case_name,
+        item["name"],
+        item["rarity"],
+        item["price"],
+        datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    ))
+    conn.commit()
+    conn.close()
+
+
+def get_inventory(tid, limit=20):
+    conn = db()
+    rows = conn.execute("""
+    SELECT id, skin_name, rarity, price, case_name
+    FROM inventory
+    WHERE telegram_id = ?
+    ORDER BY id DESC
+    LIMIT ?
+    """, (str(tid), limit)).fetchall()
+    conn.close()
+    return rows
+
+
+def sell_item(tid, item_id):
+    conn = db()
+    row = conn.execute("""
+    SELECT id, price, skin_name
+    FROM inventory
+    WHERE telegram_id = ? AND id = ?
+    """, (str(tid), item_id)).fetchone()
+
+    if not row:
+        conn.close()
+        return False, "❌ Предмет не найден."
+
+    sell_price = row["price"]
+    skin_name = row["skin_name"]
+
+    conn.execute("DELETE FROM inventory WHERE id = ?", (item_id,))
+    conn.execute(
+        "UPDATE users SET balance = balance + ? WHERE telegram_id = ?",
+        (sell_price, str(tid))
+    )
+    conn.commit()
+    conn.close()
+
+    return True, f"💸 Продано: {skin_name}\nПолучено: {sell_price} монет"
+
+
+def format_inventory(rows):
+    if not rows:
+        return "🎒 Инвентарь пуст."
+
+    text = "🎒 Твой инвентарь:\n\n"
+    for row in rows:
+        emoji = RARITY_EMOJI.get(row["rarity"], "▫️")
+        text += (
+            f"#{row['id']} | {emoji} {row['skin_name']}\n"
+            f"{row['rarity']} | {row['price']} монет\n"
+            f"Кейс: {row['case_name']}\n\n"
+        )
+    text += "Чтобы продать предмет, напиши: sell ID\nПример: sell 15"
+    return text.strip()
+
+
+def roll_case(case_name):
+    case = CASES[case_name]
+    items = case["items"]
+    weights = [item["chance"] for item in items]
+    return random.choices(items, weights=weights, k=1)[0]
+
+
+def open_case(tid, case_name):
+    user = get_user(tid)
+    case_price = CASES[case_name]["price"]
+
+    if user["balance"] < case_price:
+        return None, "❌ Недостаточно монет для открытия кейса."
+
+    update_balance(tid, -case_price)
+
+    item = roll_case(case_name)
+    add_item_to_inventory(tid, item, case_name)
+    add_case_history(tid, item, case_name)
+
+    updated = get_user(tid)
+    emoji = RARITY_EMOJI.get(item["rarity"], "▫️")
+
+    text = (
+        f"📦 {case_name}\n\n"
+        f"🎉 Тебе выпало:\n"
+        f"{emoji} {item['name']}\n"
+        f"Редкость: {item['rarity']}\n"
+        f"Цена: {item['price']} монет\n\n"
+        f"💰 Баланс: {updated['balance']}"
+    )
+
+    return item, text
+
+
 # ---------------- TELEGRAM ----------------
 def send(chat_id, text, keyboard=None):
     payload = {
@@ -159,6 +347,7 @@ def main_menu():
     return {
         "keyboard": [
             ["Баланс", "Играть"],
+            ["Кейсы", "Инвентарь"],
             ["Заработать", "Статистика"]
         ],
         "resize_keyboard": True
@@ -202,6 +391,16 @@ def roulette_menu():
             ["Красное", "Чёрное"],
             ["Чёт", "Нечёт"],
             ["Число"],
+            ["Назад"]
+        ],
+        "resize_keyboard": True
+    }
+
+
+def case_menu():
+    return {
+        "keyboard": [
+            [f"Fracture Case (200)", f"Danger Case (350)"],
             ["Назад"]
         ],
         "resize_keyboard": True
@@ -409,6 +608,8 @@ def bot():
     session = get_session(user_id)
     payload = get_session_payload(session)
 
+    lower_text = text.lower()
+
     # START
     if text == "/start":
         clear_session(user_id)
@@ -419,6 +620,20 @@ def bot():
             main_menu()
         )
         return "ok", 200
+
+    # SELL ITEM
+    if lower_text.startswith("sell "):
+        parts = lower_text.split()
+        if len(parts) == 2:
+            item_id = safe_int(parts[1])
+            if item_id is None:
+                send(chat, "❌ Формат: sell ID\nПример: sell 12", main_menu())
+                return "ok", 200
+
+            ok, result = sell_item(user_id, item_id)
+            updated = get_user(user_id)
+            send(chat, f"{result}\n\n💰 Баланс: {updated['balance']}", main_menu())
+            return "ok", 200
 
     # BACK
     if text == "Назад":
@@ -543,6 +758,33 @@ def bot():
         set_session(user_id, "roulette_wait_bet")
         send(chat, result, roulette_menu())
         send(chat, "💬 Хочешь ещё? Введи новую ставку числом.", roulette_menu())
+        return "ok", 200
+
+    # CASES
+    if text == "Кейсы":
+        clear_session(user_id)
+        send(
+            chat,
+            "📦 Выбери кейс:\n"
+            "Fracture Case — 200\n"
+            "Danger Case — 350",
+            case_menu()
+        )
+        return "ok", 200
+
+    if text == "Fracture Case (200)":
+        _, result_text = open_case(user_id, "Fracture Case")
+        send(chat, result_text, case_menu())
+        return "ok", 200
+
+    if text == "Danger Case (350)":
+        _, result_text = open_case(user_id, "Danger Case")
+        send(chat, result_text, case_menu())
+        return "ok", 200
+
+    if text == "Инвентарь":
+        rows = get_inventory(user_id)
+        send(chat, format_inventory(rows), main_menu())
         return "ok", 200
 
     # EARN
