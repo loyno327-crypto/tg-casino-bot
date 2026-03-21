@@ -247,6 +247,26 @@ SPECIAL_SLOT_MULTIPLIERS = {
     "⚡": 15,
 }
 
+SLOT_SYMBOLS = ["🍒", "🍋", "⭐", "💎", "7️⃣", "🍀", "🔥"]
+SLOT_PAYLINES = {
+    3: (5, "🔥 ДЖЕКПОТ x5"),
+    2: (2, "✨ Две одинаковые! x2"),
+}
+
+SKINS_DATA = [
+    {"name": item["name"], "rarity": item["rarity"], "price": item["price"], "case": case_name}
+    for case_name, case_data in CASES.items()
+    for item in case_data["items"]
+]
+
+UPGRADE_OPTIONS = {
+    "5%": 5,
+    "10%": 10,
+    "20%": 20,
+    "30%": 30,
+    "50%": 50,
+}
+
 
 # ---------------- USER ----------------
 def get_user(tid):
@@ -881,6 +901,14 @@ def resolve_battle(battle_id):
         f"{result_title}\n{pot_text}"
     )
 
+def accept_battle(battle_id, user_id):
+    battle = get_battle(battle_id)
+    if not battle:
+        return "❌ Сражение не найдено.", None
+    if battle["opponent_id"] != str(user_id):
+        return "❌ Это приглашение адресовано не тебе.", None
+    if battle["status"] != "pending":
+        return f"❌ Сражение уже имеет статус: {battle['status']}.", None
 
 def accept_battle(battle_id, user_id):
     battle = get_battle(battle_id)
@@ -907,6 +935,8 @@ def accept_battle(battle_id, user_id):
     conn.close()
     return None, resolve_battle(battle_id)
 
+    update_balance(challenger["telegram_id"], -case_price)
+    update_balance(opponent["telegram_id"], -case_price)
 
 def decline_battle(battle_id, user_id):
     battle = get_battle(battle_id)
