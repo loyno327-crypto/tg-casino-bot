@@ -881,6 +881,26 @@ def resolve_battle(battle_id):
         f"{result_title}\n{pot_text}"
     )
 
+    winner_id = None
+    loser_id = None
+    result_title = "🤝 Ничья — каждый получает свой дроп"
+    if challenger_item["price"] > opponent_item["price"]:
+        winner_id = battle["challenger_id"]
+        loser_id = battle["opponent_id"]
+        result_title = "🏆 Победил вызывающий игрок"
+    elif opponent_item["price"] > challenger_item["price"]:
+        winner_id = battle["opponent_id"]
+        loser_id = battle["challenger_id"]
+        result_title = "🏆 Победил приглашённый игрок"
+
+    if winner_id:
+        add_item_to_inventory(winner_id, challenger_item, battle["case_name"])
+        add_item_to_inventory(winner_id, opponent_item, battle["case_name"])
+        add_battle_result(winner_id, True)
+        add_battle_result(loser_id, False)
+    else:
+        add_item_to_inventory(battle["challenger_id"], challenger_item, battle["case_name"])
+        add_item_to_inventory(battle["opponent_id"], opponent_item, battle["case_name"])
 
 def accept_battle(battle_id, user_id):
     battle = get_battle(battle_id)
@@ -907,6 +927,15 @@ def accept_battle(battle_id, user_id):
     conn.close()
     return None, resolve_battle(battle_id)
 
+    pot_text = "Оба скина ушли победителю." if winner_id else "Ничья: каждый получил свой скин."
+    return (
+        battle,
+        f"⚔️ СРАЖЕНИЕ #{battle_id}\n\n"
+        f"Кейс: {battle['case_name']}\n"
+        f"{battle['challenger_code']}: {battle['challenger_item_name']} ({battle['challenger_item_price']})\n"
+        f"{battle['opponent_code']}: {battle['opponent_item_name']} ({battle['opponent_item_price']})\n\n"
+        f"{result_title}\n{pot_text}"
+    )
 
 def decline_battle(battle_id, user_id):
     battle = get_battle(battle_id)
