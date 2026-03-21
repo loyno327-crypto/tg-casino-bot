@@ -2,7 +2,10 @@ services:
   - type: web
     name: tg-casino-bot
     env: python
-    buildCommand: pip install -r requirements.txt
+    buildCommand: |
+      pip install -r requirements.txt
+      mkdir -p /var/data
+      python scripts/build_skin_catalog.py
     startCommand: gunicorn app:app --bind 0.0.0.0:$PORT
     disk:
       name: tg-casino-bot-data
@@ -15,3 +18,5 @@ services:
         sync: false
       - key: BOT_DB_PATH
         value: /var/data/bot.db
+      - key: SKIN_CATALOG_DB_PATH
+        value: /var/data/skin_catalog.db
