@@ -7,14 +7,15 @@ import datetime
 import json
 import traceback
 
-TOKEN = os.environ.get("7771814257:AAH_YRPXRo2wVmxCUkxha0U8daGxGchPRHQ")
+TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN") or os.environ.get("TOKEN")
 if not TOKEN:
-    raise RuntimeError("TOKEN environment variable is not set")
+    raise RuntimeError("Set TELEGRAM_BOT_TOKEN or TOKEN environment variable")
 
 BASE_URL = f"https://api.telegram.org/bot{TOKEN}"
+WEBHOOK_URL = os.environ.get("TELEGRAM_WEBHOOK_URL", "").strip()
 
 app = Flask(__name__)
-DB_PATH = "bot.db"
+DB_PATH = os.environ.get("BOT_DB_PATH", "bot.db")
 
 
 # ---------------- DB ----------------
@@ -353,6 +354,39 @@ def open_case(tid, case_name):
 
 
 # ---------------- TELEGRAM ----------------
+
+
+def configure_webhook():
+    if not WEBHOOK_URL:
+        print("WEBHOOK SKIPPED: TELEGRAM_WEBHOOK_URL is not set", flush=True)
+        return
+
+    webhook_url = WEBHOOK_URL.rstrip("/") + "/"
+
+    try:
+        response = telegram_api("setWebhook", {"url": webhook_url})
+        print("WEBHOOK STATUS:", response.status_code, flush=True)
+        print("WEBHOOK BODY:", response.text, flush=True)
+        response.raise_for_status()
+    except Exception as exc:
+        print("WEBHOOK ERROR:", str(exc), flush=True)
+        print(traceback.format_exc(), flush=True)
+
+
+@app.route("/set_webhook", methods=["POST", "GET"])
+def set_webhook_route():
+    configure_webhook()
+    return {"ok": True, "webhook_url": WEBHOOK_URL.rstrip("/") + "/" if WEBHOOK_URL else ""}, 200
+
+
+def telegram_api(method, payload):
+    return requests.post(
+        f"{BASE_URL}/{method}",
+        json=payload,
+        timeout=20
+    )
+
+
 def send(chat_id, text, keyboard=None):
     payload = {
         "chat_id": chat_id,
@@ -363,11 +397,7 @@ def send(chat_id, text, keyboard=None):
         payload["reply_markup"] = keyboard
 
     try:
-        r = requests.post(
-            f"{BASE_URL}/sendMessage",
-            json=payload,
-            timeout=20
-        )
+        r = telegram_api("sendMessage", payload)
         print("SEND STATUS:", r.status_code, flush=True)
         print("SEND BODY:", r.text, flush=True)
         return r
@@ -992,6 +1022,8 @@ def bot():
 
 
 init_db()
+configure_webhook()
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000, debug=True)
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port, debug=True)
