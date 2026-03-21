@@ -4,7 +4,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SEED_PATH = ROOT / 'data' / 'skin_catalog_seed.json'
-DB_PATH = ROOT / 'data' / 'skin_catalog.db'
+import os
+
+DB_PATH = Path(os.environ.get('SKIN_CATALOG_DB_PATH', ROOT / 'data' / 'skin_catalog.db'))
 
 
 def build_db(seed_path: Path = SEED_PATH, db_path: Path = DB_PATH) -> None:
