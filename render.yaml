@@ -4,10 +4,14 @@ services:
     env: python
     buildCommand: pip install -r requirements.txt
     startCommand: gunicorn app:app --bind 0.0.0.0:$PORT
+    disk:
+      name: tg-casino-bot-data
+      mountPath: /var/data
+      sizeGB: 1
     envVars:
       - key: TELEGRAM_BOT_TOKEN
         sync: false
       - key: TELEGRAM_WEBHOOK_URL
         sync: false
       - key: BOT_DB_PATH
-        value: bot.db
+        value: /var/data/bot.db
