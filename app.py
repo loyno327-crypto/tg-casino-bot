@@ -15,7 +15,19 @@ if not TOKEN:
 
 BASE_URL = f"https://api.telegram.org/bot{TOKEN}"
 WEBHOOK_URL = os.environ.get("TELEGRAM_WEBHOOK_URL", "").strip()
-DB_PATH = os.environ.get("BOT_DB_PATH", "bot.db")
+
+
+def resolve_db_path():
+    explicit_path = (os.environ.get("BOT_DB_PATH") or "").strip()
+    if explicit_path:
+        return explicit_path
+    persistent_dir = "/var/data"
+    if os.path.isdir(persistent_dir) or os.access(os.path.dirname(persistent_dir) or "/", os.W_OK):
+        return os.path.join(persistent_dir, "bot.db")
+    return "bot.db"
+
+
+DB_PATH = resolve_db_path()
 
 app = Flask(__name__)
 
@@ -25,8 +37,11 @@ def db():
     db_dir = os.path.dirname(DB_PATH)
     if db_dir:
         os.makedirs(db_dir, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=30)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA busy_timeout = 30000")
     return conn
 
 
@@ -1675,6 +1690,7 @@ def friends_menu():
     return {"keyboard": [["Добавить друга", "Мои друзья"], ["Главное меню"]], "resize_keyboard": True}
 
 
+print(f"DB PATH: {DB_PATH}", flush=True)
 init_db()
 configure_webhook()
 
