@@ -1372,6 +1372,11 @@ def bot():
             return "ok", 200
 
 
+        if text in {"Назад", "Главное меню"}:
+            clear_session(user_id)
+            send(chat, "Главное меню:", main_menu())
+            return "ok", 200
+
         if text in {"💸 Передать баланс", "Передать баланс"}:
             clear_session(user_id)
             set_session(user_id, "transfer_wait_code")
@@ -1424,11 +1429,6 @@ def bot():
             friend = result
             send(chat, f"✅ {friend['first_name']} добавлен в друзья.\n\n{format_friends(list_friends(user_id))}", friends_menu())
             send(int(friend["telegram_id"]), f"🤝 {user['first_name']} ({user['player_code']}) добавил тебя в друзья.", main_menu())
-            return "ok", 200
-
-        if text in {"Назад", "Главное меню"}:
-            clear_session(user_id)
-            send(chat, "Главное меню:", main_menu())
             return "ok", 200
 
         if text in {"Баланс", "💰 Баланс"}:
