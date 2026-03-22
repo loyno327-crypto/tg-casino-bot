@@ -15,15 +15,33 @@ if not TOKEN:
 
 BASE_URL = f"https://api.telegram.org/bot{TOKEN}"
 WEBHOOK_URL = os.environ.get("TELEGRAM_WEBHOOK_URL", "").strip()
-DB_PATH = os.environ.get("BOT_DB_PATH", "bot.db")
+
+
+def resolve_db_path():
+    explicit_path = (os.environ.get("BOT_DB_PATH") or "").strip()
+    if explicit_path:
+        return explicit_path
+    persistent_dir = "/var/data"
+    if os.path.isdir(persistent_dir) or os.access(os.path.dirname(persistent_dir) or "/", os.W_OK):
+        return os.path.join(persistent_dir, "bot.db")
+    return "bot.db"
+
+
+DB_PATH = resolve_db_path()
 
 app = Flask(__name__)
 
 
 # ---------------- DB ----------------
 def db():
-    conn = sqlite3.connect(DB_PATH)
+    db_dir = os.path.dirname(DB_PATH)
+    if db_dir:
+        os.makedirs(db_dir, exist_ok=True)
+    conn = sqlite3.connect(DB_PATH, timeout=30)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA busy_timeout = 30000")
     return conn
 
 
@@ -122,12 +140,22 @@ def init_db():
     )
     """)
 
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS friends (
+        user_id TEXT,
+        friend_id TEXT,
+        created_at TEXT,
+        PRIMARY KEY (user_id, friend_id)
+    )
+    """)
+
     conn.commit()
     conn.close()
 
     ensure_column("users", "player_code", "TEXT")
     ensure_column("users", "battles_won", "INTEGER DEFAULT 0")
     ensure_column("users", "battles_lost", "INTEGER DEFAULT 0")
+    ensure_column("users", "last_deposit_at", "TEXT")
     ensure_column("battles", "challenger_item_rarity", "TEXT")
     ensure_column("battles", "opponent_item_rarity", "TEXT")
 
@@ -172,6 +200,76 @@ CASES = {
             {"name": "USP-S | Neo-Noir", "rarity": "Classified", "price": 2200, "chance": 6},
             {"name": "M4A1-S | Printstream", "rarity": "Covert", "price": 6500, "chance": 5},
             {"name": "★ Karambit | Doppler", "rarity": "Knife", "price": 42000, "chance": 2},
+        ],
+    },
+    "Recoil Case": {
+        "price": 500,
+        "items": [
+            {"name": "FAMAS | Meow 36", "rarity": "Consumer", "price": 180, "chance": 22.5},
+            {"name": "Galil AR | Destroyer", "rarity": "Consumer", "price": 220, "chance": 20},
+            {"name": "MAC-10 | Monkeyflage", "rarity": "Industrial", "price": 260, "chance": 17},
+            {"name": "R8 Revolver | Crazy 8", "rarity": "Industrial", "price": 320, "chance": 14},
+            {"name": "M4A4 | Poly Mag", "rarity": "Mil-Spec", "price": 520, "chance": 10},
+            {"name": "AWP | Chromatic Aberration", "rarity": "Restricted", "price": 1200, "chance": 7},
+            {"name": "USP-S | Printstream", "rarity": "Classified", "price": 3500, "chance": 5},
+            {"name": "★ Ursus Knife | Tiger Tooth", "rarity": "Knife", "price": 28000, "chance": 4.3},
+            {"name": "★ Butterfly Knife | Lore", "rarity": "Knife", "price": 120000, "chance": 0.1},
+        ],
+    },
+    "Prisma Case": {
+        "price": 700,
+        "items": [
+            {"name": "MP5-SD | Acid Wash", "rarity": "Consumer", "price": 220, "chance": 21},
+            {"name": "AUG | Sweeper", "rarity": "Consumer", "price": 250, "chance": 18},
+            {"name": "XM1014 | Incinegator", "rarity": "Industrial", "price": 330, "chance": 16},
+            {"name": "R8 Revolver | Skull Crusher", "rarity": "Industrial", "price": 420, "chance": 14},
+            {"name": "P250 | Visions", "rarity": "Mil-Spec", "price": 650, "chance": 11},
+            {"name": "M4A1-S | Decimator", "rarity": "Restricted", "price": 1650, "chance": 8},
+            {"name": "AK-47 | Neon Rider", "rarity": "Classified", "price": 4200, "chance": 6},
+            {"name": "★ Talon Knife | Fade", "rarity": "Knife", "price": 44000, "chance": 5.9},
+            {"name": "★ Karambit | Marble Fade", "rarity": "Knife", "price": 150000, "chance": 0.1},
+        ],
+    },
+    "Gamma 2 Case": {
+        "price": 1000,
+        "items": [
+            {"name": "Five-SeveN | Scumbria", "rarity": "Consumer", "price": 280, "chance": 22},
+            {"name": "SCAR-20 | Powercore", "rarity": "Consumer", "price": 320, "chance": 18},
+            {"name": "P90 | Chopper", "rarity": "Industrial", "price": 420, "chance": 16},
+            {"name": "Tec-9 | Fuel Injector", "rarity": "Industrial", "price": 540, "chance": 13},
+            {"name": "AK-47 | Orbit Mk01", "rarity": "Mil-Spec", "price": 850, "chance": 12},
+            {"name": "M4A1-S | Mecha Industries", "rarity": "Restricted", "price": 2100, "chance": 8},
+            {"name": "FAMAS | Roll Cage", "rarity": "Classified", "price": 5200, "chance": 6},
+            {"name": "★ Flip Knife | Gamma Doppler", "rarity": "Knife", "price": 52000, "chance": 4.9},
+            {"name": "★ M9 Bayonet | Lore", "rarity": "Knife", "price": 175000, "chance": 0.1},
+        ],
+    },
+    "Chroma 3 Case": {
+        "price": 1500,
+        "items": [
+            {"name": "PP-Bizon | Judgement of Anubis", "rarity": "Consumer", "price": 350, "chance": 21},
+            {"name": "SG 553 | Atlas", "rarity": "Consumer", "price": 390, "chance": 18},
+            {"name": "Glock-18 | Weasel", "rarity": "Industrial", "price": 520, "chance": 16},
+            {"name": "CZ75-Auto | Red Astor", "rarity": "Industrial", "price": 680, "chance": 14},
+            {"name": "M4A1-S | Chantico's Fire", "rarity": "Mil-Spec", "price": 1200, "chance": 11},
+            {"name": "AWP | Fever Dream", "rarity": "Restricted", "price": 2600, "chance": 8},
+            {"name": "USP-S | Kill Confirmed", "rarity": "Classified", "price": 6800, "chance": 6},
+            {"name": "★ Bayonet | Doppler", "rarity": "Knife", "price": 64000, "chance": 5.9},
+            {"name": "★ Skeleton Knife | Fade", "rarity": "Knife", "price": 210000, "chance": 0.1},
+        ],
+    },
+    "Dreams & Nightmares Case": {
+        "price": 2500,
+        "items": [
+            {"name": "MP7 | Abyssal Apparition", "rarity": "Consumer", "price": 480, "chance": 21},
+            {"name": "Dual Berettas | Melondrama", "rarity": "Consumer", "price": 520, "chance": 18},
+            {"name": "FAMAS | Rapid Eye Movement", "rarity": "Industrial", "price": 740, "chance": 16},
+            {"name": "XM1014 | Zombie Offensive", "rarity": "Industrial", "price": 920, "chance": 13},
+            {"name": "USP-S | Ticket to Hell", "rarity": "Mil-Spec", "price": 1500, "chance": 11},
+            {"name": "AK-47 | Nightwish", "rarity": "Restricted", "price": 3400, "chance": 8},
+            {"name": "MP9 | Starlight Protector", "rarity": "Classified", "price": 8200, "chance": 7},
+            {"name": "★ Huntsman Knife | Gamma Doppler", "rarity": "Knife", "price": 76000, "chance": 5.8},
+            {"name": "★ Karambit | Gamma Doppler Emerald", "rarity": "Knife", "price": 350000, "chance": 0.1},
         ],
     },
 }
@@ -221,6 +319,7 @@ SKINS_DATA = [
 ] + EXTRA_SKINS
 
 UPGRADE_OPTIONS = {"5%": 5, "10%": 10, "20%": 20, "30%": 30, "50%": 50}
+ACTIVE_BATTLE_STATUSES = ("pending", "accepted")
 
 SLOT_SYMBOLS = [
     {"symbol": "🍒", "weight": 18},
@@ -476,10 +575,10 @@ def sell_item(tid, item_id):
 
 
 def inventory_action_menu(rows):
-    keyboard = []
+    keyboard = [["Продать всё", "Обновить инвентарь"]]
     for row in rows[:10]:
         keyboard.append([f"Продать #{row['id']}", f"Апгрейд #{row['id']}"])
-    keyboard.append(["Назад"])
+    keyboard.append(["Главное меню"])
     return {"keyboard": keyboard, "resize_keyboard": True}
 
 
@@ -531,6 +630,107 @@ def open_case(tid, case_name):
     )
 
 
+def sell_all_items(tid):
+    conn = db()
+    rows = conn.execute("SELECT id, price FROM inventory WHERE telegram_id = ?", (str(tid),)).fetchall()
+    if not rows:
+        conn.close()
+        return False, "🎒 Инвентарь пуст."
+    total = sum(row["price"] for row in rows)
+    count = len(rows)
+    conn.execute("DELETE FROM inventory WHERE telegram_id = ?", (str(tid),))
+    conn.execute("UPDATE users SET balance = balance + ? WHERE telegram_id = ?", (total, str(tid)))
+    conn.commit()
+    conn.close()
+    return True, f"💸 Продано предметов: {count}\nПолучено: {total} монет"
+
+
+def transfer_balance(sender_id, target_code, amount):
+    if amount is None or amount <= 0:
+        return False, "❌ Сумма перевода должна быть больше 0."
+    sender = get_user(sender_id)
+    recipient = get_user_by_code(target_code)
+    if not recipient:
+        return False, "❌ Игрок с таким кодом не найден."
+    if recipient["telegram_id"] == str(sender_id):
+        return False, "❌ Нельзя перевести монеты самому себе."
+    if sender["balance"] < amount:
+        return False, "❌ Недостаточно монет для перевода."
+
+    conn = db()
+    conn.execute("UPDATE users SET balance = balance - ? WHERE telegram_id = ?", (amount, str(sender_id)))
+    conn.execute("UPDATE users SET balance = balance + ? WHERE telegram_id = ?", (amount, recipient["telegram_id"]))
+    conn.commit()
+    conn.close()
+    return True, recipient
+
+
+def add_friend(user_id, friend_code):
+    user = get_user(user_id)
+    friend = get_user_by_code(friend_code)
+    if not friend:
+        return False, "❌ Игрок с таким кодом не найден."
+    if friend["telegram_id"] == str(user_id):
+        return False, "❌ Нельзя добавить себя в друзья."
+    conn = db()
+    conn.execute(
+        "INSERT OR IGNORE INTO friends (user_id, friend_id, created_at) VALUES (?, ?, ?)",
+        (str(user_id), friend["telegram_id"], datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+    )
+    conn.execute(
+        "INSERT OR IGNORE INTO friends (user_id, friend_id, created_at) VALUES (?, ?, ?)",
+        (friend["telegram_id"], str(user_id), datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+    )
+    conn.commit()
+    changes = conn.total_changes
+    conn.close()
+    if changes == 0:
+        return False, f"ℹ️ {friend['first_name']} уже у тебя в друзьях."
+    return True, friend
+
+
+def list_friends(user_id, limit=20):
+    conn = db()
+    rows = conn.execute(
+        """
+        SELECT u.telegram_id, u.first_name, u.player_code, u.balance
+        FROM friends f
+        JOIN users u ON u.telegram_id = f.friend_id
+        WHERE f.user_id = ?
+        ORDER BY u.first_name COLLATE NOCASE ASC
+        LIMIT ?
+        """,
+        (str(user_id), limit),
+    ).fetchall()
+    conn.close()
+    return rows
+
+
+def format_friends(rows):
+    if not rows:
+        return "🤝 У тебя пока нет друзей. Нажми «Добавить друга»."
+    lines = ["🤝 Твои друзья:", ""]
+    for row in rows:
+        lines.append(f"• {row['first_name']} | код {row['player_code']} | баланс {row['balance']}")
+    return "\n".join(lines)
+
+
+def find_active_battle_for_user(user_id):
+    conn = db()
+    row = conn.execute(
+        """
+        SELECT * FROM battles
+        WHERE (challenger_id = ? OR opponent_id = ?)
+          AND status IN ('pending', 'accepted')
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (str(user_id), str(user_id)),
+    ).fetchone()
+    conn.close()
+    return row
+
+
 # ---------------- TELEGRAM ----------------
 def telegram_api(method, payload):
     return requests.post(f"{BASE_URL}/{method}", json=payload, timeout=20)
@@ -576,17 +776,18 @@ def set_webhook_route():
 def main_menu():
     return {
         "keyboard": [
-            ["Баланс", "Играть"],
-            ["Кейсы", "Инвентарь"],
-            ["Апгрейд", "Сражения"],
-            ["Заработать", "Статистика"],
+            ["🎰 Играть", "📦 Кейсы"],
+            ["🎒 Инвентарь", "⚔️ Сражения"],
+            ["💸 Передать баланс", "🤝 Друзья"],
+            ["💰 Баланс", "📊 Статистика"],
+            ["🧠 Заработать"],
         ],
         "resize_keyboard": True,
     }
 
 
 def game_menu():
-    return {"keyboard": [["Слот", "Рулетка"], ["Назад"]], "resize_keyboard": True}
+    return {"keyboard": [["Слот", "Рулетка"], ["Главное меню"]], "resize_keyboard": True}
 
 
 def bet_menu():
@@ -598,35 +799,41 @@ def roulette_menu():
 
 
 def case_menu():
-    return {"keyboard": [["Fracture Case (200)", "Danger Case (350)"], ["Назад"]], "resize_keyboard": True}
+    return {"keyboard": [
+        ["Fracture Case (200)", "Danger Case (350)"],
+        ["Recoil Case (500)", "Prisma Case (700)"],
+        ["Gamma 2 Case (1000)", "Chroma 3 Case (1500)"],
+        ["Dreams & Nightmares Case (2500)"],
+        ["Главное меню"],
+    ], "resize_keyboard": True}
 
 
 def earn_menu():
-    return {"keyboard": [["Пример"], ["Назад"]], "resize_keyboard": True}
+    return {"keyboard": [["Пример"], ["Главное меню"]], "resize_keyboard": True}
 
 
 def upgrade_percent_menu():
-    return {"keyboard": [["5%", "10%", "20%"], ["30%", "50%"], ["Назад"]], "resize_keyboard": True}
+    return {"keyboard": [["5%", "10%", "20%"], ["30%", "50%"], ["Главное меню"]], "resize_keyboard": True}
 
 
 def battle_menu():
-    return {"keyboard": [["Создать сражение", "Мои сражения"], ["Назад"]], "resize_keyboard": True}
+    return {"keyboard": [["Создать сражение", "Мои сражения"], ["Главное меню"]], "resize_keyboard": True}
 
 
 def battle_case_menu():
-    return {"keyboard": [["Fracture Case", "Danger Case"], ["Назад"]], "resize_keyboard": True}
+    return {"keyboard": [["Fracture Case", "Danger Case"], ["Recoil Case", "Prisma Case"], ["Gamma 2 Case", "Chroma 3 Case"], ["Dreams & Nightmares Case"], ["Главное меню"]], "resize_keyboard": True}
 
 
 def player_search_results_menu(players):
     keyboard = []
     for player in players[:8]:
         keyboard.append([f"Игрок {player['player_code']} | {player['first_name']}"])
-    keyboard.append(["Назад"])
+    keyboard.append(["Главное меню"])
     return {"keyboard": keyboard, "resize_keyboard": True}
 
 
 def answer_options_menu(options):
-    keyboard = [[str(option) for option in options[:2]], [str(options[2])], ["Назад"]]
+    keyboard = [[str(option) for option in options[:2]], [str(options[2])], ["Главное меню"]]
     return {"keyboard": keyboard, "resize_keyboard": True}
 
 
@@ -655,11 +862,16 @@ def safe_int(text):
 
 
 def normalize_case_name(text):
-    if text == "Fracture Case (200)":
-        return "Fracture Case"
-    if text == "Danger Case (350)":
-        return "Danger Case"
-    return text
+    mapping = {
+        "Fracture Case (200)": "Fracture Case",
+        "Danger Case (350)": "Danger Case",
+        "Recoil Case (500)": "Recoil Case",
+        "Prisma Case (700)": "Prisma Case",
+        "Gamma 2 Case (1000)": "Gamma 2 Case",
+        "Chroma 3 Case (1500)": "Chroma 3 Case",
+        "Dreams & Nightmares Case (2500)": "Dreams & Nightmares Case",
+    }
+    return mapping.get(text, text)
 
 
 def format_stats(user):
@@ -692,6 +904,13 @@ def extract_player_code_from_button(text):
         return None
     parts = text.split()
     return parts[1] if len(parts) >= 2 else None
+
+
+def parse_battle_action(text, action_label):
+    prefix = f"{action_label} #"
+    if not text.startswith(prefix):
+        return None
+    return safe_int(text.split("#", 1)[1])
 
 
 def weighted_slot_symbol():
@@ -758,6 +977,13 @@ def perform_upgrade(tid, inventory_id, percent):
 
 
 def create_battle(challenger, opponent, case_name):
+    active_challenger = find_active_battle_for_user(challenger["telegram_id"])
+    if active_challenger:
+        return None, f"❌ У тебя уже есть активное сражение #{active_challenger['id']}. Сначала заверши его."
+    active_opponent = find_active_battle_for_user(opponent["telegram_id"])
+    if active_opponent:
+        return None, f"❌ У соперника уже есть активное сражение #{active_opponent['id']}."
+
     conn = db()
     cursor = conn.execute(
         """
@@ -778,7 +1004,7 @@ def create_battle(challenger, opponent, case_name):
     battle_id = cursor.lastrowid
     conn.commit()
     conn.close()
-    return battle_id
+    return battle_id, None
 
 
 def get_battle(battle_id):
@@ -801,6 +1027,13 @@ def list_user_battles(tid, limit=10):
     ).fetchall()
     conn.close()
     return rows
+
+
+def battle_action_menu(battle_id):
+    return {
+        "keyboard": [[f"Принять бой #{battle_id}", f"Отклонить бой #{battle_id}"], ["Главное меню"]],
+        "resize_keyboard": True,
+    }
 
 
 def format_battle_list(rows):
@@ -881,26 +1114,6 @@ def resolve_battle(battle_id):
         f"{result_title}\n{pot_text}"
     )
 
-    winner_id = None
-    loser_id = None
-    result_title = "🤝 Ничья — каждый получает свой дроп"
-    if challenger_item["price"] > opponent_item["price"]:
-        winner_id = battle["challenger_id"]
-        loser_id = battle["opponent_id"]
-        result_title = "🏆 Победил вызывающий игрок"
-    elif opponent_item["price"] > challenger_item["price"]:
-        winner_id = battle["opponent_id"]
-        loser_id = battle["challenger_id"]
-        result_title = "🏆 Победил приглашённый игрок"
-
-    if winner_id:
-        add_item_to_inventory(winner_id, challenger_item, battle["case_name"])
-        add_item_to_inventory(winner_id, opponent_item, battle["case_name"])
-        add_battle_result(winner_id, True)
-        add_battle_result(loser_id, False)
-    else:
-        add_item_to_inventory(battle["challenger_id"], challenger_item, battle["case_name"])
-        add_item_to_inventory(battle["opponent_id"], opponent_item, battle["case_name"])
 
 def accept_battle(battle_id, user_id):
     battle = get_battle(battle_id)
@@ -910,6 +1123,9 @@ def accept_battle(battle_id, user_id):
         return "❌ Это приглашение адресовано не тебе.", None
     if battle["status"] != "pending":
         return f"❌ Сражение уже имеет статус: {battle['status']}.", None
+    active = find_active_battle_for_user(user_id)
+    if active and active["id"] != battle_id:
+        return f"❌ У тебя уже есть активное сражение #{active['id']}.", None
 
     case_price = CASES[battle["case_name"]]["price"]
     challenger = get_user(battle["challenger_id"])
@@ -927,15 +1143,6 @@ def accept_battle(battle_id, user_id):
     conn.close()
     return None, resolve_battle(battle_id)
 
-    pot_text = "Оба скина ушли победителю." if winner_id else "Ничья: каждый получил свой скин."
-    return (
-        battle,
-        f"⚔️ СРАЖЕНИЕ #{battle_id}\n\n"
-        f"Кейс: {battle['case_name']}\n"
-        f"{battle['challenger_code']}: {battle['challenger_item_name']} ({battle['challenger_item_price']})\n"
-        f"{battle['opponent_code']}: {battle['opponent_item_name']} ({battle['opponent_item_price']})\n\n"
-        f"{result_title}\n{pot_text}"
-    )
 
 def decline_battle(battle_id, user_id):
     battle = get_battle(battle_id)
@@ -1118,6 +1325,13 @@ def bot():
             )
             return "ok", 200
 
+        if text == "Продать всё":
+            ok, result = sell_all_items(user_id)
+            rows = get_inventory(user_id)
+            updated = get_user(user_id)
+            send(chat, f"{result}\n\n💰 Баланс: {updated['balance']}\n\n{format_inventory(rows)}", inventory_action_menu(rows) if rows else main_menu())
+            return "ok", 200
+
         sell_id = parse_inventory_action(text, "Продать")
         if sell_id is not None or lower_text.startswith("sell "):
             item_id = sell_id if sell_id is not None else safe_int(lower_text.split()[-1])
@@ -1126,7 +1340,8 @@ def bot():
                 return "ok", 200
             ok, result = sell_item(user_id, item_id)
             updated = get_user(user_id)
-            send(chat, f"{result}\n\n💰 Баланс: {updated['balance']}", main_menu())
+            rows = get_inventory(user_id)
+            send(chat, f"{result}\n\n💰 Баланс: {updated['balance']}\n\n{format_inventory(rows)}", inventory_action_menu(rows) if rows else main_menu())
             return "ok", 200
 
         upgrade_id = parse_inventory_action(text, "Апгрейд")
@@ -1147,8 +1362,11 @@ def bot():
             )
             return "ok", 200
 
-        if lower_text.startswith("battle accept "):
-            battle_id = safe_int(lower_text.split()[-1])
+        accept_battle_id = parse_battle_action(text, "Принять бой")
+        decline_battle_id = parse_battle_action(text, "Отклонить бой")
+
+        if accept_battle_id is not None or lower_text.startswith("battle accept "):
+            battle_id = accept_battle_id if accept_battle_id is not None else safe_int(lower_text.split()[-1])
             error_text, battle_result = accept_battle(battle_id, user_id)
             if error_text:
                 send(chat, error_text, main_menu())
@@ -1159,8 +1377,8 @@ def bot():
             send(int(battle["challenger_id"]), f"⚔️ Твоё приглашение приняли.\n\n{result_text}", main_menu())
             return "ok", 200
 
-        if lower_text.startswith("battle decline "):
-            battle_id = safe_int(lower_text.split()[-1])
+        if decline_battle_id is not None or lower_text.startswith("battle decline "):
+            battle_id = decline_battle_id if decline_battle_id is not None else safe_int(lower_text.split()[-1])
             result_text = decline_battle(battle_id, user_id)
             battle = get_battle(battle_id)
             send(chat, result_text, main_menu())
@@ -1168,20 +1386,75 @@ def bot():
                 send(int(battle["challenger_id"]), f"⚠️ Игрок отклонил сражение #{battle_id}.", main_menu())
             return "ok", 200
 
-        if text == "Назад":
+
+        if text in {"Назад", "Главное меню"}:
             clear_session(user_id)
             send(chat, "Главное меню:", main_menu())
             return "ok", 200
 
-        if text == "Баланс":
+        if text in {"💸 Передать баланс", "Передать баланс"}:
+            clear_session(user_id)
+            set_session(user_id, "transfer_wait_code")
+            send(chat, "💸 Введи код игрока, которому хочешь перевести монеты.", main_menu())
+            return "ok", 200
+
+        if session and session["state"] == "transfer_wait_code":
+            recipient = get_user_by_code(text)
+            if not recipient or recipient["telegram_id"] == str(user_id):
+                send(chat, "❌ Введи корректный код другого игрока.", main_menu())
+                return "ok", 200
+            set_session(user_id, "transfer_wait_amount", {"recipient_code": recipient["player_code"]})
+            send(chat, f"Игрок найден: {recipient['first_name']} ({recipient['player_code']}).\nВведи сумму перевода.", main_menu())
+            return "ok", 200
+
+        if session and session["state"] == "transfer_wait_amount":
+            amount = safe_int(text)
+            ok, result = transfer_balance(user_id, payload.get("recipient_code", ""), amount)
+            if not ok:
+                send(chat, result, main_menu())
+                return "ok", 200
+            clear_session(user_id)
+            updated = get_user(user_id)
+            recipient = result
+            send(chat, f"✅ Перевод выполнен игроку {recipient['first_name']} ({recipient['player_code']}).\n{format_balance_text(updated)}", main_menu())
+            send(int(recipient["telegram_id"]), f"💸 Тебе перевели {amount} монет от {user['first_name']} ({user['player_code']}).", main_menu())
+            return "ok", 200
+
+        if text in {"🤝 Друзья", "Друзья"}:
+            clear_session(user_id)
+            send(chat, format_friends(list_friends(user_id)), friends_menu())
+            return "ok", 200
+
+        if text == "Мои друзья":
+            send(chat, format_friends(list_friends(user_id)), friends_menu())
+            return "ok", 200
+
+        if text == "Добавить друга":
+            clear_session(user_id)
+            set_session(user_id, "friend_wait_code")
+            send(chat, "🤝 Введи код игрока, которого хочешь добавить в друзья.", friends_menu())
+            return "ok", 200
+
+        if session and session["state"] == "friend_wait_code":
+            ok, result = add_friend(user_id, text)
+            if not ok and isinstance(result, str):
+                send(chat, result, friends_menu())
+                return "ok", 200
+            clear_session(user_id)
+            friend = result
+            send(chat, f"✅ {friend['first_name']} добавлен в друзья.\n\n{format_friends(list_friends(user_id))}", friends_menu())
+            send(int(friend["telegram_id"]), f"🤝 {user['first_name']} ({user['player_code']}) добавил тебя в друзья.", main_menu())
+            return "ok", 200
+
+        if text in {"Баланс", "💰 Баланс"}:
             send(chat, format_balance_text(get_user(user_id)), main_menu())
             return "ok", 200
 
-        if text == "Статистика":
+        if text in {"Статистика", "📊 Статистика"}:
             send(chat, format_stats(get_user(user_id)), main_menu())
             return "ok", 200
 
-        if text == "Играть":
+        if text in {"Играть", "🎰 Играть"}:
             clear_session(user_id)
             send(chat, "🎮 Выбери игру:", game_menu())
             return "ok", 200
@@ -1257,17 +1530,17 @@ def bot():
             send(chat, "💬 Хочешь ещё? Введи новую ставку числом.", roulette_menu())
             return "ok", 200
 
-        if text == "Кейсы":
+        if text in {"Кейсы", "📦 Кейсы"}:
             clear_session(user_id)
-            send(chat, "📦 Выбери кейс:\nFracture Case — 200\nDanger Case — 350", case_menu())
+            send(chat, "📦 Выбери кейс:\nFracture Case — 200\nDanger Case — 350\nRecoil Case — 500\nPrisma Case — 700\nGamma 2 Case — 1000\nChroma 3 Case — 1500\nDreams & Nightmares Case — 2500", case_menu())
             return "ok", 200
 
-        if text in ["Fracture Case (200)", "Danger Case (350)"]:
+        if normalize_case_name(text) in CASES and text.endswith(")"):
             _, result_text = open_case(user_id, normalize_case_name(text))
             send(chat, result_text, case_menu())
             return "ok", 200
 
-        if text == "Инвентарь":
+        if text in {"Инвентарь", "🎒 Инвентарь", "Обновить инвентарь"}:
             rows = get_inventory(user_id)
             send(chat, format_inventory(rows), inventory_action_menu(rows) if rows else main_menu())
             return "ok", 200
@@ -1292,7 +1565,7 @@ def bot():
             send(chat, perform_upgrade(user_id, inventory_id, percent), inventory_action_menu(get_inventory(user_id)) if rows_before else main_menu())
             return "ok", 200
 
-        if text == "Сражения":
+        if text in {"Сражения", "⚔️ Сражения"}:
             clear_session(user_id)
             send(
                 chat,
@@ -1352,7 +1625,11 @@ def bot():
                 clear_session(user_id)
                 send(chat, f"❌ Нужно минимум {case_price} монет для участия в этом сражении.", battle_menu())
                 return "ok", 200
-            battle_id = create_battle(challenger, opponent, case_name)
+            battle_id, battle_error = create_battle(challenger, opponent, case_name)
+            if battle_error:
+                clear_session(user_id)
+                send(chat, battle_error, battle_menu())
+                return "ok", 200
             clear_session(user_id)
             send(
                 chat,
@@ -1369,13 +1646,12 @@ def bot():
                 f"Кейс: {case_name}\n"
                 f"Вход: {case_price} монет\n"
                 f"Награда: победитель получает оба выпавших скина\n\n"
-                f"Чтобы принять: battle accept {battle_id}\n"
-                f"Чтобы отклонить: battle decline {battle_id}",
-                main_menu(),
+                f"Нажми кнопку ниже, чтобы принять или отклонить вызов.",
+                battle_action_menu(battle_id),
             )
             return "ok", 200
 
-        if text == "Заработать":
+        if text in {"Заработать", "🧠 Заработать"}:
             clear_session(user_id)
             send(chat, "🧠 Выбери способ заработка:", earn_menu())
             return "ok", 200
@@ -1410,6 +1686,11 @@ def bot():
         return "ok", 200
 
 
+def friends_menu():
+    return {"keyboard": [["Добавить друга", "Мои друзья"], ["Главное меню"]], "resize_keyboard": True}
+
+
+print(f"DB PATH: {DB_PATH}", flush=True)
 init_db()
 configure_webhook()
 
