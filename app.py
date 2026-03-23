@@ -8,6 +8,7 @@ import string
 import traceback
 
 import requests
+from supabase import Client, create_client
 
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN") or os.environ.get("TOKEN")
 if not TOKEN:
@@ -28,6 +29,10 @@ def resolve_db_path():
 
 
 DB_PATH = resolve_db_path()
+SUPABASE_URL = (os.environ.get("SUPABASE_URL") or "").strip()
+SUPABASE_KEY = (os.environ.get("SUPABASE_KEY") or "").strip()
+SUPABASE_USERS_TABLE = (os.environ.get("SUPABASE_USERS_TABLE") or "users").strip()
+SUPABASE_CLIENT = create_client(SUPABASE_URL, SUPABASE_KEY) if SUPABASE_URL and SUPABASE_KEY else None
 
 app = Flask(__name__)
 
@@ -61,13 +66,46 @@ def ensure_column(table_name, column_name, definition):
     conn.close()
 
 
+def using_supabase_user_store():
+    return SUPABASE_CLIENT is not None
+
+
+def supabase_table():
+    return SUPABASE_CLIENT.table(SUPABASE_USERS_TABLE)
+
+
+def normalize_user_record(record):
+    if not record:
+        return None
+    return {
+        "telegram_id": int(record["telegram_id"]),
+        "first_name": record.get("name") or "Игрок",
+        "name": record.get("name") or "Игрок",
+        "player_code": record.get("player_code") or "",
+        "balance": int(record.get("balance") or 700),
+        "wins": int(record.get("wins_games") or 0),
+        "losses": int(record.get("losses_games") or 0),
+        "wins_games": int(record.get("wins_games") or 0),
+        "losses_games": int(record.get("losses_games") or 0),
+        "battles_won": int(record.get("wins_battles") or 0),
+        "battles_lost": int(record.get("losses_battles") or 0),
+        "wins_battles": int(record.get("wins_battles") or 0),
+        "losses_battles": int(record.get("losses_battles") or 0),
+        "created_at": record.get("created_at"),
+    }
+
+
 def generate_player_code(length=6):
     alphabet = string.ascii_uppercase + string.digits
     while True:
         code = "".join(random.choice(alphabet) for _ in range(length))
-        conn = db()
-        exists = conn.execute("SELECT 1 FROM users WHERE player_code = ?", (code,)).fetchone()
-        conn.close()
+        if using_supabase_user_store():
+            response = supabase_table().select("telegram_id").eq("player_code", code).limit(1).execute()
+            exists = bool(response.data)
+        else:
+            conn = db()
+            exists = conn.execute("SELECT 1 FROM users WHERE player_code = ?", (code,)).fetchone()
+            conn.close()
         if not exists:
             return code
 
@@ -78,11 +116,14 @@ def init_db():
 
     cur.execute("""
     CREATE TABLE IF NOT EXISTS users (
-        telegram_id TEXT PRIMARY KEY,
-        first_name TEXT,
-        balance INTEGER DEFAULT 1000,
-        wins INTEGER DEFAULT 0,
-        losses INTEGER DEFAULT 0,
+        telegram_id INTEGER PRIMARY KEY,
+        name TEXT,
+        player_code TEXT,
+        balance INTEGER DEFAULT 700,
+        wins_games INTEGER DEFAULT 0,
+        losses_games INTEGER DEFAULT 0,
+        wins_battles INTEGER DEFAULT 0,
+        losses_battles INTEGER DEFAULT 0,
         created_at TEXT
     )
     """)
@@ -152,7 +193,17 @@ def init_db():
     conn.commit()
     conn.close()
 
+    ensure_column("users", "name", "TEXT")
     ensure_column("users", "player_code", "TEXT")
+    ensure_column("users", "balance", "INTEGER DEFAULT 700")
+    ensure_column("users", "wins_games", "INTEGER DEFAULT 0")
+    ensure_column("users", "losses_games", "INTEGER DEFAULT 0")
+    ensure_column("users", "wins_battles", "INTEGER DEFAULT 0")
+    ensure_column("users", "losses_battles", "INTEGER DEFAULT 0")
+    ensure_column("users", "created_at", "TEXT")
+    ensure_column("users", "first_name", "TEXT")
+    ensure_column("users", "wins", "INTEGER DEFAULT 0")
+    ensure_column("users", "losses", "INTEGER DEFAULT 0")
     ensure_column("users", "battles_won", "INTEGER DEFAULT 0")
     ensure_column("users", "battles_lost", "INTEGER DEFAULT 0")
     ensure_column("users", "last_deposit_at", "TEXT")
@@ -160,6 +211,13 @@ def init_db():
     ensure_column("battles", "opponent_item_rarity", "TEXT")
 
     conn = db()
+    conn.execute("UPDATE users SET name = COALESCE(name, first_name)")
+    conn.execute("UPDATE users SET first_name = COALESCE(first_name, name)")
+    conn.execute("UPDATE users SET wins_games = COALESCE(wins_games, wins, 0)")
+    conn.execute("UPDATE users SET losses_games = COALESCE(losses_games, losses, 0)")
+    conn.execute("UPDATE users SET wins_battles = COALESCE(wins_battles, battles_won, 0)")
+    conn.execute("UPDATE users SET losses_battles = COALESCE(losses_battles, battles_lost, 0)")
+    conn.execute("UPDATE users SET balance = COALESCE(balance, 700)")
     rows = conn.execute("SELECT telegram_id FROM users WHERE player_code IS NULL OR player_code = ''").fetchall()
     for row in rows:
         conn.execute(
@@ -348,104 +406,257 @@ SPECIAL_SLOT_MULTIPLIERS = {
 
 
 # ---------------- USER ----------------
-def get_user(tid):
+def user_select_sql():
+    return """
+        SELECT
+            telegram_id,
+            COALESCE(name, first_name) AS first_name,
+            COALESCE(name, first_name) AS name,
+            player_code,
+            COALESCE(balance, 700) AS balance,
+            COALESCE(wins_games, wins, 0) AS wins,
+            COALESCE(losses_games, losses, 0) AS losses,
+            COALESCE(wins_games, wins, 0) AS wins_games,
+            COALESCE(losses_games, losses, 0) AS losses_games,
+            COALESCE(wins_battles, battles_won, 0) AS battles_won,
+            COALESCE(losses_battles, battles_lost, 0) AS battles_lost,
+            COALESCE(wins_battles, battles_won, 0) AS wins_battles,
+            COALESCE(losses_battles, battles_lost, 0) AS losses_battles,
+            created_at
+        FROM users
+    """
+
+
+def get_or_create_user(telegram_id, name):
+    telegram_id = int(telegram_id)
+    name = name or "Игрок"
+
+    if using_supabase_user_store():
+        response = supabase_table().select("*").eq("telegram_id", telegram_id).limit(1).execute()
+        if response.data:
+            existing = response.data[0]
+            if name and existing.get("name") != name:
+                supabase_table().update({"name": name}).eq("telegram_id", telegram_id).execute()
+                existing["name"] = name
+            return normalize_user_record(existing)
+
+        payload = {
+            "telegram_id": telegram_id,
+            "name": name,
+            "player_code": generate_player_code(),
+            "balance": 700,
+            "wins_games": 0,
+            "losses_games": 0,
+            "wins_battles": 0,
+            "losses_battles": 0,
+        }
+        response = supabase_table().insert(payload).execute()
+        return normalize_user_record(response.data[0])
+
     conn = db()
-    user = conn.execute("SELECT * FROM users WHERE telegram_id = ?", (str(tid),)).fetchone()
+    existing = conn.execute(user_select_sql() + " WHERE telegram_id = ?", (telegram_id,)).fetchone()
+    if existing:
+        conn.execute(
+            "UPDATE users SET name = COALESCE(?, name), first_name = COALESCE(?, first_name) WHERE telegram_id = ?",
+            (name, name, telegram_id),
+        )
+        conn.commit()
+        user = conn.execute(user_select_sql() + " WHERE telegram_id = ?", (telegram_id,)).fetchone()
+        conn.close()
+        return user
+
+    conn.execute(
+        """
+        INSERT INTO users (
+            telegram_id, name, first_name, player_code, balance,
+            wins_games, losses_games, wins_battles, losses_battles, created_at,
+            wins, losses, battles_won, battles_lost
+        )
+        VALUES (?, ?, ?, ?, 700, 0, 0, 0, 0, ?, 0, 0, 0, 0)
+        """,
+        (
+            telegram_id,
+            name,
+            name,
+            generate_player_code(),
+            datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        ),
+    )
+    conn.commit()
+    user = conn.execute(user_select_sql() + " WHERE telegram_id = ?", (telegram_id,)).fetchone()
+    conn.close()
+    return user
+
+
+def get_user(tid):
+    tid = int(tid)
+    if using_supabase_user_store():
+        response = supabase_table().select("*").eq("telegram_id", tid).limit(1).execute()
+        return normalize_user_record(response.data[0]) if response.data else None
+    conn = db()
+    user = conn.execute(user_select_sql() + " WHERE telegram_id = ?", (tid,)).fetchone()
     conn.close()
     return user
 
 
 def get_user_by_code(player_code):
+    code = (player_code or "").upper()
+    if using_supabase_user_store():
+        response = supabase_table().select("*").eq("player_code", code).limit(1).execute()
+        return normalize_user_record(response.data[0]) if response.data else None
     conn = db()
-    user = conn.execute("SELECT * FROM users WHERE player_code = ?", (player_code.upper(),)).fetchone()
+    user = conn.execute(user_select_sql() + " WHERE player_code = ?", (code,)).fetchone()
     conn.close()
     return user
 
 
+def get_user_stats(telegram_id):
+    return get_user(telegram_id)
+
+
 def search_players(query, exclude_tid=None, limit=8):
     query = (query or "").strip()
-    exclude_tid = str(exclude_tid) if exclude_tid is not None else None
-    like_query = f"%{query.lower()}%"
-    conn = db()
+    exclude_tid = int(exclude_tid) if exclude_tid is not None else None
+    like_query = query.lower()
 
+    if using_supabase_user_store():
+        response = supabase_table().select("*").limit(limit).execute()
+        rows = [normalize_user_record(item) for item in response.data]
+        filtered = []
+        for row in rows:
+            if exclude_tid is not None and row["telegram_id"] == exclude_tid:
+                continue
+            if not query or like_query in (row["first_name"] or "").lower() or like_query in (row["player_code"] or "").lower() or str(row["telegram_id"]) == query:
+                filtered.append(row)
+        return filtered[:limit]
+
+    conn = db()
+    like_sql = f"%{like_query}%"
     if query.isdigit():
         rows = conn.execute(
+            user_select_sql() +
             """
-            SELECT * FROM users
-            WHERE telegram_id = ? AND (? IS NULL OR telegram_id != ?)
-            LIMIT ?
+             WHERE telegram_id = ? AND (? IS NULL OR telegram_id != ?)
+             LIMIT ?
             """,
-            (query, exclude_tid, exclude_tid, limit),
+            (int(query), exclude_tid, exclude_tid, limit),
         ).fetchall()
         if rows:
             conn.close()
             return rows
 
     rows = conn.execute(
+        user_select_sql() +
         """
-        SELECT * FROM users
         WHERE (? IS NULL OR telegram_id != ?)
           AND (
-            LOWER(first_name) LIKE ?
+            LOWER(COALESCE(name, first_name, '')) LIKE ?
             OR LOWER(player_code) LIKE ?
-            OR telegram_id = ?
+            OR CAST(telegram_id AS TEXT) = ?
           )
-        ORDER BY first_name COLLATE NOCASE ASC
+        ORDER BY COALESCE(name, first_name) COLLATE NOCASE ASC
         LIMIT ?
         """,
-        (exclude_tid, exclude_tid, like_query, like_query, query, limit),
+        (exclude_tid, exclude_tid, like_sql, like_sql, query, limit),
     ).fetchall()
     conn.close()
     return rows
 
 
 def create_user(tid, name):
+    return get_or_create_user(tid, name)
+
+
+def update_balance(telegram_id, balance):
+    telegram_id = int(telegram_id)
+    balance = int(balance)
+    if using_supabase_user_store():
+        supabase_table().update({"balance": balance}).eq("telegram_id", telegram_id).execute()
+        return
     conn = db()
-    conn.execute(
-        """
-        INSERT OR IGNORE INTO users (telegram_id, first_name, balance, created_at, player_code, battles_won, battles_lost)
-        VALUES (?, ?, ?, ?, ?, 0, 0)
-        """,
-        (
-            str(tid),
-            name,
-            1000,
-            datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            generate_player_code(),
-        ),
-    )
-    conn.execute("UPDATE users SET first_name = COALESCE(?, first_name) WHERE telegram_id = ?", (name, str(tid)))
+    conn.execute("UPDATE users SET balance = ?, first_name = COALESCE(first_name, name), name = COALESCE(name, first_name) WHERE telegram_id = ?", (balance, telegram_id))
     conn.commit()
     conn.close()
 
 
-def update_balance(tid, delta):
+def adjust_balance(telegram_id, delta):
+    user = get_or_create_user(telegram_id, "Игрок")
+    update_balance(telegram_id, user["balance"] + delta)
+
+
+def increment_game_win(telegram_id):
+    telegram_id = int(telegram_id)
+    if using_supabase_user_store():
+        user = get_or_create_user(telegram_id, "Игрок")
+        supabase_table().update({"wins_games": user["wins_games"] + 1}).eq("telegram_id", telegram_id).execute()
+        return
     conn = db()
-    conn.execute("UPDATE users SET balance = balance + ? WHERE telegram_id = ?", (delta, str(tid)))
+    conn.execute(
+        "UPDATE users SET wins_games = COALESCE(wins_games, 0) + 1, wins = COALESCE(wins, 0) + 1 WHERE telegram_id = ?",
+        (telegram_id,),
+    )
+    conn.commit()
+    conn.close()
+
+
+def increment_game_loss(telegram_id):
+    telegram_id = int(telegram_id)
+    if using_supabase_user_store():
+        user = get_or_create_user(telegram_id, "Игрок")
+        supabase_table().update({"losses_games": user["losses_games"] + 1}).eq("telegram_id", telegram_id).execute()
+        return
+    conn = db()
+    conn.execute(
+        "UPDATE users SET losses_games = COALESCE(losses_games, 0) + 1, losses = COALESCE(losses, 0) + 1 WHERE telegram_id = ?",
+        (telegram_id,),
+    )
+    conn.commit()
+    conn.close()
+
+
+def increment_battle_win(telegram_id):
+    telegram_id = int(telegram_id)
+    if using_supabase_user_store():
+        user = get_or_create_user(telegram_id, "Игрок")
+        supabase_table().update({"wins_battles": user["wins_battles"] + 1}).eq("telegram_id", telegram_id).execute()
+        return
+    conn = db()
+    conn.execute(
+        "UPDATE users SET wins_battles = COALESCE(wins_battles, 0) + 1, battles_won = COALESCE(battles_won, 0) + 1 WHERE telegram_id = ?",
+        (telegram_id,),
+    )
+    conn.commit()
+    conn.close()
+
+
+def increment_battle_loss(telegram_id):
+    telegram_id = int(telegram_id)
+    if using_supabase_user_store():
+        user = get_or_create_user(telegram_id, "Игрок")
+        supabase_table().update({"losses_battles": user["losses_battles"] + 1}).eq("telegram_id", telegram_id).execute()
+        return
+    conn = db()
+    conn.execute(
+        "UPDATE users SET losses_battles = COALESCE(losses_battles, 0) + 1, battles_lost = COALESCE(battles_lost, 0) + 1 WHERE telegram_id = ?",
+        (telegram_id,),
+    )
     conn.commit()
     conn.close()
 
 
 def add_win(tid):
-    conn = db()
-    conn.execute("UPDATE users SET wins = wins + 1 WHERE telegram_id = ?", (str(tid),))
-    conn.commit()
-    conn.close()
+    increment_game_win(tid)
 
 
 def add_loss(tid):
-    conn = db()
-    conn.execute("UPDATE users SET losses = losses + 1 WHERE telegram_id = ?", (str(tid),))
-    conn.commit()
-    conn.close()
+    increment_game_loss(tid)
 
 
 def add_battle_result(tid, won):
-    column = "battles_won" if won else "battles_lost"
-    conn = db()
-    conn.execute(f"UPDATE users SET {column} = COALESCE({column}, 0) + 1 WHERE telegram_id = ?", (str(tid),))
-    conn.commit()
-    conn.close()
+    if won:
+        increment_battle_win(tid)
+    else:
+        increment_battle_loss(tid)
 
 
 # ---------------- SESSION ----------------
@@ -611,10 +822,10 @@ def open_case(tid, case_name):
         return None, "❌ Кейс не найден."
     if user["balance"] < case["price"]:
         return None, "❌ Недостаточно монет для открытия кейса."
-    update_balance(tid, -case["price"])
+    adjust_balance(tid, -case["price"])
     item = roll_case(case_name)
     if not item:
-        update_balance(tid, case["price"])
+        adjust_balance(tid, case["price"])
         return None, "❌ Ошибка открытия кейса."
     add_item_to_inventory(tid, item, case_name)
     add_case_history(tid, item, case_name)
@@ -1135,8 +1346,8 @@ def accept_battle(battle_id, user_id):
     if opponent["balance"] < case_price:
         return "❌ У тебя недостаточно монет для принятия сражения.", None
 
-    update_balance(challenger["telegram_id"], -case_price)
-    update_balance(opponent["telegram_id"], -case_price)
+    adjust_balance(challenger["telegram_id"], -case_price)
+    adjust_balance(opponent["telegram_id"], -case_price)
     conn = db()
     conn.execute("UPDATE battles SET status = 'accepted' WHERE id = ?", (battle_id,))
     conn.commit()
@@ -1182,7 +1393,7 @@ def slot_spin(tid, bet):
         multiplier = SPECIAL_SLOT_MULTIPLIERS.get(repeated_symbol, 5)
         win_amount = bet * multiplier
         profit = win_amount - bet
-        update_balance(tid, profit)
+        adjust_balance(tid, profit)
         add_win(tid)
         updated = get_user(tid)
         return (
@@ -1196,7 +1407,7 @@ def slot_spin(tid, bet):
     if max_count == 2:
         win_amount = bet * 2
         profit = win_amount - bet
-        update_balance(tid, profit)
+        adjust_balance(tid, profit)
         add_win(tid)
         updated = get_user(tid)
         return (
@@ -1207,7 +1418,7 @@ def slot_spin(tid, bet):
             f"Чистая прибыль: +{profit}\n\n{format_balance_text(updated)}"
         )
 
-    update_balance(tid, -bet)
+    adjust_balance(tid, -bet)
     add_loss(tid)
     updated = get_user(tid)
     return (
@@ -1250,7 +1461,7 @@ def roulette_resolve(tid, bet, bet_type, bet_value):
     if won:
         win_amount = bet * multiplier
         profit = win_amount - bet
-        update_balance(tid, profit)
+        adjust_balance(tid, profit)
         add_win(tid)
         updated = get_user(tid)
         return (
@@ -1258,7 +1469,7 @@ def roulette_resolve(tid, bet, bet_type, bet_value):
             f"Ставка: {bet}\nВыплата: {win_amount}\nЧистая прибыль: +{profit}\n\n{format_balance_text(updated)}"
         )
 
-    update_balance(tid, -bet)
+    adjust_balance(tid, -bet)
     add_loss(tid)
     updated = get_user(tid)
     return (
@@ -1310,8 +1521,7 @@ def bot():
         tg_user = msg["from"]
         user_id = tg_user["id"]
 
-        create_user(user_id, tg_user.get("first_name", "Игрок"))
-        user = get_user(user_id)
+        user = get_or_create_user(user_id, tg_user.get("first_name", "Игрок"))
         session = get_session(user_id)
         payload = get_session_payload(session)
         lower_text = text.lower()
@@ -1670,7 +1880,7 @@ def bot():
                 return "ok", 200
             clear_session(user_id)
             if chosen_answer == correct_answer:
-                update_balance(user_id, 100)
+                adjust_balance(user_id, 100)
                 updated_user = get_user(user_id)
                 send(chat, f"✅ Верно! +100 монет\n{format_balance_text(updated_user)}", earn_menu())
                 return "ok", 200
@@ -1691,6 +1901,7 @@ def friends_menu():
 
 
 print(f"DB PATH: {DB_PATH}", flush=True)
+print(f"USER STORE: {'supabase' if SUPABASE_CLIENT else 'sqlite'}", flush=True)
 init_db()
 configure_webhook()
 
