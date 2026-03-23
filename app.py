@@ -18,30 +18,116 @@ BASE_URL = f"https://api.telegram.org/bot{TOKEN}"
 WEBHOOK_URL = os.environ.get("TELEGRAM_WEBHOOK_URL", "").strip()
 
 
+def ensure_runtime_db_path(path):
+    db_dir = os.path.dirname(path)
+    if not db_dir:
+        return path
+    try:
+        os.makedirs(db_dir, exist_ok=True)
+        return path
+    except PermissionError:
+        fallback_path = os.path.basename(path) or "bot.db"
+        print(f"DB PATH FALLBACK: cannot access {db_dir}, using {fallback_path}", flush=True)
+        return fallback_path
+
+
 def resolve_db_path():
     explicit_path = (os.environ.get("BOT_DB_PATH") or "").strip()
     if explicit_path:
-        return explicit_path
+        return ensure_runtime_db_path(explicit_path)
     persistent_dir = "/var/data"
+    default_path = os.path.join(persistent_dir, "bot.db")
     if os.path.isdir(persistent_dir) or os.access(os.path.dirname(persistent_dir) or "/", os.W_OK):
-        return os.path.join(persistent_dir, "bot.db")
+        return ensure_runtime_db_path(default_path)
     return "bot.db"
 
 
 DB_PATH = resolve_db_path()
-SUPABASE_URL = (os.environ.get("SUPABASE_URL") or "").strip()
+SUPABASE_URL = (os.environ.get("SUPABASE_URL") or "").strip().rstrip("/")
 SUPABASE_KEY = (os.environ.get("SUPABASE_KEY") or "").strip()
 SUPABASE_USERS_TABLE = (os.environ.get("SUPABASE_USERS_TABLE") or "users").strip()
-SUPABASE_CLIENT = create_client(SUPABASE_URL, SUPABASE_KEY) if SUPABASE_URL and SUPABASE_KEY else None
+
+
+class SupabaseResponse:
+    def __init__(self, data):
+        self.data = data
+
+
+class SupabaseQuery:
+    def __init__(self, table_name):
+        self.table_name = table_name
+        self._method = "GET"
+        self._select = "*"
+        self._filters = []
+        self._limit = None
+        self._payload = None
+
+    def select(self, columns="*"):
+        self._method = "GET"
+        self._select = columns or "*"
+        return self
+
+    def eq(self, column, value):
+        self._filters.append((column, f"eq.{value}"))
+        return self
+
+    def limit(self, value):
+        self._limit = int(value)
+        return self
+
+    def insert(self, payload):
+        self._method = "POST"
+        self._payload = payload
+        return self
+
+    def update(self, payload):
+        self._method = "PATCH"
+        self._payload = payload
+        return self
+
+    def execute(self):
+        if not SUPABASE_URL or not SUPABASE_KEY:
+            raise RuntimeError("Supabase is not configured")
+
+        url = f"{SUPABASE_URL}/rest/v1/{self.table_name}"
+        headers = {
+            "apikey": SUPABASE_KEY,
+            "Authorization": f"Bearer {SUPABASE_KEY}",
+            "Accept": "application/json",
+        }
+        params = {}
+        if self._method == "GET":
+            params["select"] = self._select
+        if self._limit is not None:
+            params["limit"] = str(self._limit)
+        for column, value in self._filters:
+            params[column] = value
+
+        request_kwargs = {"headers": headers, "params": params, "timeout": 30}
+        if self._method in {"POST", "PATCH"}:
+            headers["Content-Type"] = "application/json"
+            headers["Prefer"] = "return=representation"
+            request_kwargs["json"] = self._payload
+
+        response = requests.request(self._method, url, **request_kwargs)
+        response.raise_for_status()
+        if not response.text.strip():
+            return SupabaseResponse([])
+        return SupabaseResponse(response.json())
+
+
+class SupabaseClient:
+    def table(self, table_name):
+        return SupabaseQuery(table_name)
+
+
+SUPABASE_CLIENT = SupabaseClient() if SUPABASE_URL and SUPABASE_KEY else None
 
 app = Flask(__name__)
 
 
 # ---------------- DB ----------------
 def db():
-    db_dir = os.path.dirname(DB_PATH)
-    if db_dir:
-        os.makedirs(db_dir, exist_ok=True)
     conn = sqlite3.connect(DB_PATH, timeout=30)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
@@ -61,9 +147,43 @@ def ensure_column(table_name, column_name, definition):
     if column_name in table_columns(table_name):
         return
     conn = db()
-    conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}")
-    conn.commit()
-    conn.close()
+    try:
+        conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}")
+        conn.commit()
+    except sqlite3.OperationalError as exc:
+        if "duplicate column name" not in str(exc).lower():
+            raise
+    finally:
+        conn.close()
+
+
+def using_supabase_user_store():
+    return SUPABASE_CLIENT is not None
+
+
+def supabase_table():
+    return SUPABASE_CLIENT.table(SUPABASE_USERS_TABLE)
+
+
+def normalize_user_record(record):
+    if not record:
+        return None
+    return {
+        "telegram_id": int(record["telegram_id"]),
+        "first_name": record.get("name") or "Игрок",
+        "name": record.get("name") or "Игрок",
+        "player_code": record.get("player_code") or "",
+        "balance": int(record.get("balance") or 700),
+        "wins": int(record.get("wins_games") or 0),
+        "losses": int(record.get("losses_games") or 0),
+        "wins_games": int(record.get("wins_games") or 0),
+        "losses_games": int(record.get("losses_games") or 0),
+        "battles_won": int(record.get("wins_battles") or 0),
+        "battles_lost": int(record.get("losses_battles") or 0),
+        "wins_battles": int(record.get("wins_battles") or 0),
+        "losses_battles": int(record.get("losses_battles") or 0),
+        "created_at": record.get("created_at"),
+    }
 
 
 def using_supabase_user_store():
