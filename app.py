@@ -8,6 +8,7 @@ import string
 import traceback
 
 import requests
+from supabase import Client, create_client
 
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN") or os.environ.get("TOKEN")
 if not TOKEN:
@@ -154,6 +155,35 @@ def ensure_column(table_name, column_name, definition):
             raise
     finally:
         conn.close()
+
+
+def using_supabase_user_store():
+    return SUPABASE_CLIENT is not None
+
+
+def supabase_table():
+    return SUPABASE_CLIENT.table(SUPABASE_USERS_TABLE)
+
+
+def normalize_user_record(record):
+    if not record:
+        return None
+    return {
+        "telegram_id": int(record["telegram_id"]),
+        "first_name": record.get("name") or "Игрок",
+        "name": record.get("name") or "Игрок",
+        "player_code": record.get("player_code") or "",
+        "balance": int(record.get("balance") or 700),
+        "wins": int(record.get("wins_games") or 0),
+        "losses": int(record.get("losses_games") or 0),
+        "wins_games": int(record.get("wins_games") or 0),
+        "losses_games": int(record.get("losses_games") or 0),
+        "battles_won": int(record.get("wins_battles") or 0),
+        "battles_lost": int(record.get("losses_battles") or 0),
+        "wins_battles": int(record.get("wins_battles") or 0),
+        "losses_battles": int(record.get("losses_battles") or 0),
+        "created_at": record.get("created_at"),
+    }
 
 
 def using_supabase_user_store():
